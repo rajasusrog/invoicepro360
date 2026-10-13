@@ -31,13 +31,13 @@ export async function safeFetchJson<T = any>(url: string, options?: RequestInit)
       throw new Error("API endpoint not found (404). Please ensure the backend function is deployed.");
     }
     if (response.status === 500) {
-      throw new Error(parsed?.error || "AI service internal error (500). Please check your Gemini API key.");
+      throw new Error(parsed?.error || "AI service internal error (500). Please check your server environment bindings and API keys.");
     }
     throw new Error(`Server returned HTTP ${response.status}: ${rawText.slice(0, 150) || "Empty response"}`);
   }
 
   if (parsed === null) {
-    throw new Error("AI service returned an empty or non-JSON response. Please check server configuration and Gemini API Key.");
+    throw new Error("AI service returned an empty or non-JSON response. Please check server configuration and provider API keys.");
   }
 
   return parsed as T;

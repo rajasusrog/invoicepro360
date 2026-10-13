@@ -176,4 +176,16 @@ export interface EmailReminderLog {
   status: 'sent' | 'scheduled' | 'delivered';
 }
 
+export type LLMProviderId = 'gemini' | 'openai' | 'anthropic';
+
+export interface LLMProviderInfo {
+  id: LLMProviderId;
+  name: string;
+  badge: string;
+  description: string;
+  defaultModel: string;
+  ocrModel: string;
+  supportedModels: string[];
+}
+
 

@@ -39,6 +39,8 @@ import {
 } from "../utils/invoiceUtils";
 import { safeFetchJson } from "../utils/apiUtils";
 import { calculateNextDueDate } from "../utils/recurringUtils";
+import { getActiveProvider, getActiveModel } from "../utils/aiConfig";
+import LLMProviderSelector from "./LLMProviderSelector";
 import TemplateManager from "./TemplateManager";
 
 interface InvoiceCreatorProps {
@@ -226,11 +228,18 @@ export default function InvoiceCreator({ onInvoiceCreated, onBatchInvoicesCreate
       enrichedPrompt += `\n\n[Instruction: If appropriate, use my business settings as the supplier or billed from party (or customer if specified): Name: "${companySettings.name}", Address: "${companySettings.address}", GSTIN: "${companySettings.gstin}"].`;
     }
 
+    const activeProvider = getActiveProvider();
+    const activeModel = getActiveModel(activeProvider);
+
     try {
       const generatedData = await safeFetchJson("/api/invoice/create-from-text", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: enrichedPrompt })
+        body: JSON.stringify({ 
+          prompt: enrichedPrompt,
+          provider: activeProvider,
+          model: activeModel
+        })
       });
       
       // Complete calculations (taxes, igst, cgst, sgst, subtotal, totals)
@@ -306,7 +315,7 @@ export default function InvoiceCreator({ onInvoiceCreated, onBatchInvoicesCreate
       onInvoiceCreated(finalInvoice);
     } catch (err: any) {
       console.error("AI invoice generation error:", err);
-      setTextError(err.message || "AI invoice generation failed. Please check the Gemini API configuration.");
+      setTextError(err.message || "AI invoice generation failed. Please check your AI API key and connection.");
     } finally {
       setTextGenerating(false);
     }
@@ -317,11 +326,19 @@ export default function InvoiceCreator({ onInvoiceCreated, onBatchInvoicesCreate
     setOcrLoading(true);
     setOcrError(null);
 
+    const activeProvider = getActiveProvider();
+    const activeModel = getActiveModel(activeProvider);
+
     try {
       const extracted = await safeFetchJson("/api/invoice/ocr", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileBase64: base64Data, mimeType })
+        body: JSON.stringify({ 
+          fileBase64: base64Data, 
+          mimeType,
+          provider: activeProvider,
+          model: activeModel
+        })
       });
 
       // Complete calculations safely
@@ -518,11 +535,19 @@ export default function InvoiceCreator({ onInvoiceCreated, onBatchInvoicesCreate
       // Mark individual item as processing
       setBatchQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: "processing" } : q));
 
+      const activeProvider = getActiveProvider();
+      const activeModel = getActiveModel(activeProvider);
+
       try {
         const extracted = await safeFetchJson("/api/invoice/ocr", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fileBase64: item.base64Data, mimeType: item.mimeType })
+          body: JSON.stringify({ 
+            fileBase64: item.base64Data, 
+            mimeType: item.mimeType,
+            provider: activeProvider,
+            model: activeModel
+          })
         });
 
         const mathResult = calculateInvoiceTotals(
@@ -604,11 +629,18 @@ export default function InvoiceCreator({ onInvoiceCreated, onBatchInvoicesCreate
     setOcrError(null);
     setSelectedFile({ name: sample.name, size: "Sample Document" });
 
+    const activeProvider = getActiveProvider();
+    const activeModel = getActiveModel(activeProvider);
+
     try {
       const parsed = await safeFetchJson("/api/invoice/create-from-text", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: `Extract and structure this scanned invoice: ${sample.prompt}` })
+        body: JSON.stringify({ 
+          prompt: `Extract and structure this scanned invoice: ${sample.prompt}`,
+          provider: activeProvider,
+          model: activeModel
+        })
       });
 
       const mathResult = calculateInvoiceTotals(parsed.items, parsed.supplierGstin, parsed.customerGstin);
@@ -727,14 +759,19 @@ export default function InvoiceCreator({ onInvoiceCreated, onBatchInvoicesCreate
         {/* TAB 1: TEXT GENERATOR */}
         {activeMode === "text" && (
           <div className="space-y-6" id="text-generator-panel">
-            <div className="space-y-1">
-              <h4 className="font-display font-bold text-white text-base flex items-center space-x-1.5">
-                <Sparkles className="w-4.5 h-4.5 text-indigo-400" />
-                <span>Create invoice with natural language</span>
-              </h4>
-              <p className="text-xs text-slate-400">
-                Type details about suppliers, items, pricing, and taxes. Our AI compiles everything into a perfectly balanced ledger record.
-              </p>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="space-y-1">
+                <h4 className="font-display font-bold text-white text-base flex items-center space-x-1.5">
+                  <Sparkles className="w-4.5 h-4.5 text-indigo-400" />
+                  <span>Create invoice with natural language</span>
+                </h4>
+                <p className="text-xs text-slate-400">
+                  Type details about suppliers, items, pricing, and taxes. Our AI compiles everything into a perfectly balanced ledger record.
+                </p>
+              </div>
+              <div className="shrink-0">
+                <LLMProviderSelector id="creator-text-provider-selector" />
+              </div>
             </div>
 
             {/* Input prompt area */}
@@ -853,7 +890,7 @@ export default function InvoiceCreator({ onInvoiceCreated, onBatchInvoicesCreate
                   {textGenerating ? (
                     <>
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>Gemini is Creating...</span>
+                      <span>AI is Compiling...</span>
                     </>
                   ) : (
                     <>
@@ -906,14 +943,19 @@ export default function InvoiceCreator({ onInvoiceCreated, onBatchInvoicesCreate
         {/* TAB 2: SINGLE OCR SCANNER */}
         {activeMode === "ocr" && (
           <div className="space-y-6" id="ocr-generator-panel">
-            <div className="space-y-1">
-              <h4 className="font-display font-bold text-white text-base flex items-center space-x-1.5">
-                <Upload className="w-4.5 h-4.5 text-indigo-400" />
-                <span>Invoice OCR Extractor</span>
-              </h4>
-              <p className="text-xs text-slate-400">
-                Upload physical receipt photos, PDFs, or mobile scans. Gemini parses invoice tables, total rates, merchant GSTINs, and items instantaneously.
-              </p>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="space-y-1">
+                <h4 className="font-display font-bold text-white text-base flex items-center space-x-1.5">
+                  <Upload className="w-4.5 h-4.5 text-indigo-400" />
+                  <span>Invoice OCR Extractor</span>
+                </h4>
+                <p className="text-xs text-slate-400">
+                  Upload physical receipt photos, PDFs, or mobile scans. Vision AI parses invoice tables, total rates, merchant GSTINs, and items instantaneously.
+                </p>
+              </div>
+              <div className="shrink-0">
+                <LLMProviderSelector id="creator-ocr-provider-selector" />
+              </div>
             </div>
 
             {/* Drop Zone */}

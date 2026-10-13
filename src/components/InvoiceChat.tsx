@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { safeFetchJson } from "../utils/apiUtils";
+import { getActiveProvider, getActiveModel } from "../utils/aiConfig";
+import LLMProviderSelector from "./LLMProviderSelector";
 
 interface InvoiceChatProps {
   invoices: Invoice[];
@@ -46,13 +48,18 @@ export default function InvoiceChat({ invoices, onApplyFilter, messages, setMess
     setInputText("");
     setLoading(true);
 
+    const activeProvider = getActiveProvider();
+    const activeModel = getActiveModel(activeProvider);
+
     try {
       const botData = await safeFetchJson("/api/invoice/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: [...messages, userMsg],
-          invoices
+          invoices,
+          provider: activeProvider,
+          model: activeModel
         })
       });
 
@@ -75,7 +82,7 @@ export default function InvoiceChat({ invoices, onApplyFilter, messages, setMess
       const errorMsg: ChatMessage = {
         id: "msg-err",
         sender: "assistant",
-        text: `⚠️ **Error communicating with Gemini AI**: ${err.message || "Something went wrong. Please check your server status."}`,
+        text: `⚠️ **AI Service Error** (${activeProvider.toUpperCase()}): ${err.message || "Something went wrong. Please check your server status."}`,
         createdAt: new Date().toISOString()
       };
       setMessages(prev => [...prev, errorMsg]);
@@ -119,14 +126,17 @@ export default function InvoiceChat({ invoices, onApplyFilter, messages, setMess
           </div>
         </div>
 
-        <button 
-          onClick={handleClearHistory}
-          className="p-1.5 hover:bg-white/5 rounded-xl text-slate-400 hover:text-white transition-colors cursor-pointer"
-          title="Clear Conversation"
-          id="clear-chat-history"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
+        <div className="flex items-center space-x-2">
+          <LLMProviderSelector id="chat-llm-selector" />
+          <button 
+            onClick={handleClearHistory}
+            className="p-1.5 hover:bg-white/5 rounded-xl text-slate-400 hover:text-white transition-colors cursor-pointer"
+            title="Clear Conversation"
+            id="clear-chat-history"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* Chat Thread Messages */}
