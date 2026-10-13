@@ -71,7 +71,7 @@ Return the structured invoice details exactly matching the schema.`,
       required: ["supplierName", "customerName", "items"]
     };
 
-    const text = await callGeminiRest(apiKey, "gemini-2.5-flash", {
+    const text = await callGeminiRest(apiKey, "gemini-3.8-flash", {
       contents: [{ parts: [imagePart, textPart] }],
       responseMimeType: "application/json",
       responseSchema
