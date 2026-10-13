@@ -69,11 +69,22 @@ export async function callGeminiRest(
     throw new Error(`Gemini API returned non-JSON response (status ${response.status}): ${responseText.slice(0, 200)}`);
   }
 
+  
   if (!response.ok || data.error) {
-    // If gemini-2.5-flash returns 404 or not found, try fallback to gemini-1.5-flash or gemini-2.0-flash
-    if (response.status === 404 && model !== "gemini-1.5-flash") {
-      return callGeminiRest(apiKey, "gemini-1.5-flash", payload);
+    // Retry once with the current model if a different model returns 404.
+    const fallbackModel = "gemini-3.8-flash";
+
+    if (response.status === 404 && model !== fallbackModel) {
+      return callGeminiRest(apiKey, fallbackModel, payload);
     }
+
+    const errMsg =
+      data.error?.message ||
+      `Gemini API request failed with status ${response.status}`;
+
+    throw new Error(errMsg);
+  }
+
     const errMsg = data.error?.message || `Gemini API request failed with status ${response.status}`;
     throw new Error(errMsg);
   }
