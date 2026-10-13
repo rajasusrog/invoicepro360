@@ -104,7 +104,7 @@ Always return your response in JSON format matching the schema:
       required: ["text"]
     };
 
-    const text = await callGeminiRest(apiKey, "gemini-2.5-flash", {
+    const text = await callGeminiRest(apiKey, "gemini-3.8-flash", {
       contents,
       systemInstruction,
       responseMimeType: "application/json",
