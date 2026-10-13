@@ -1,5 +1,8 @@
 
- // Shared Cloudflare Worker & Pages Functions helper for Gemini API calls via fetch
+const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
+const GEMINI_API_VERSION = "v1beta";
+
+// Shared Cloudflare Worker & Pages Functions helper for Gemini API calls
 
 export function jsonResponse(data: any, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -17,13 +20,9 @@ export function errorResponse(message: string, status = 500) {
   return jsonResponse({ error: message }, status);
 }
 
-/**
- * Direct fetch-based Gemini GenerateContent caller.
- * Compatible with Cloudflare Workers and Pages Functions.
- */
 export async function callGeminiRest(
   apiKey: string,
-  model: string,
+  model: string = DEFAULT_GEMINI_MODEL,
   payload: {
     contents: any[];
     systemInstruction?: string;
@@ -32,7 +31,7 @@ export async function callGeminiRest(
   }
 ): Promise<string> {
   const url =
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
 
   const generationConfig: any = {};
 
