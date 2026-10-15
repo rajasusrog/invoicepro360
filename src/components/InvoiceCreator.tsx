@@ -48,6 +48,7 @@ interface InvoiceCreatorProps {
   onBatchInvoicesCreated?: (invoices: Invoice[]) => void;
   onClose: () => void;
   companySettings?: CompanySettings;
+  onQuotaExceeded?: (info: { type: "ai" | "invoice"; used?: number; limit?: number; resetDate?: string; planId?: string }) => void;
 }
 
 type CreatorMode = "text" | "ocr" | "batch" | "templates";
@@ -67,7 +68,13 @@ interface BatchQueueItem {
   tags?: string[];
 }
 
-export default function InvoiceCreator({ onInvoiceCreated, onBatchInvoicesCreated, onClose, companySettings }: InvoiceCreatorProps) {
+export default function InvoiceCreator({ 
+  onInvoiceCreated, 
+  onBatchInvoicesCreated, 
+  onClose, 
+  companySettings,
+  onQuotaExceeded
+}: InvoiceCreatorProps) {
   const [activeMode, setActiveMode] = useState<CreatorMode>("text");
   
   // Recurring Invoice States
@@ -315,6 +322,15 @@ export default function InvoiceCreator({ onInvoiceCreated, onBatchInvoicesCreate
       onInvoiceCreated(finalInvoice);
     } catch (err: any) {
       console.error("AI invoice generation error:", err);
+      if (err.code === "AI_QUOTA_EXCEEDED" && onQuotaExceeded) {
+        onQuotaExceeded({
+          type: "ai",
+          used: err.used,
+          limit: err.limit,
+          resetDate: err.resetDate,
+          planId: err.planId
+        });
+      }
       setTextError(err.message || "AI invoice generation failed. Please check your AI API key and connection.");
     } finally {
       setTextGenerating(false);
@@ -402,6 +418,15 @@ export default function InvoiceCreator({ onInvoiceCreated, onBatchInvoicesCreate
       onInvoiceCreated(finalInvoice);
     } catch (err: any) {
       console.error("AI OCR error:", err);
+      if (err.code === "AI_QUOTA_EXCEEDED" && onQuotaExceeded) {
+        onQuotaExceeded({
+          type: "ai",
+          used: err.used,
+          limit: err.limit,
+          resetDate: err.resetDate,
+          planId: err.planId
+        });
+      }
       setOcrError(err.message || "Could not parse details from image. Try another file or template.");
     } finally {
       setOcrLoading(false);

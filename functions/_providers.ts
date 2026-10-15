@@ -11,13 +11,13 @@ export interface ProviderModelConfig {
 
 export const PROVIDER_CONFIGS: Record<LLMProvider, ProviderModelConfig> = {
   gemini: {
-    defaultModel: "gemini-3.5-flash",
-    visionModel: "gemini-3.5-flash",
+    defaultModel: "gemini-3.8-flash",
+    visionModel: "gemini-3.8-flash",
     allowedModels: [
+      "gemini-3.8-flash",
       "gemini-3.5-flash",
       "gemini-3.6-flash",
-      "gemini-3-flash-preview",
-      "gemini-3.8-flash"
+      "gemini-3-flash-preview"
     ]
   },
   openai: {

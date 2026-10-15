@@ -6,9 +6,9 @@ export const AVAILABLE_PROVIDERS: LLMProviderInfo[] = [
     name: "Google Gemini",
     badge: "Default",
     description: "Fast multimodal intelligence with native Indian GST comprehension",
-    defaultModel: "gemini-3.5-flash",
-    ocrModel: "gemini-3.5-flash",
-    supportedModels: ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.8-flash"]
+    defaultModel: "gemini-3.8-flash",
+    ocrModel: "gemini-3.8-flash",
+    supportedModels: ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.6-flash"]
   },
   {
     id: "openai",

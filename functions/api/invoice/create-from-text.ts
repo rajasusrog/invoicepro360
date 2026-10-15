@@ -1,80 +1,87 @@
-import { callGeminiRest, jsonResponse, errorResponse } from "../../_gemini";
+import { jsonResponse, errorResponse } from "../../_gemini";
+import { generateInvoiceFromText } from "../../_providers";
+import { authenticateRequest, checkAndIncrementAiQuota, refundAiQuota } from "../../_subscription";
 
 interface Env {
   GEMINI_API_KEY?: string;
+  OPENAI_API_KEY?: string;
   [key: string]: any;
 }
 
 export const onRequestPost = async (context: { request: Request; env: Env }) => {
+  let authenticatedUserId: string | null = null;
+  const { request, env } = context;
+
   try {
-    const { request, env } = context;
-    const apiKey = env.GEMINI_API_KEY || (typeof process !== "undefined" ? process.env?.GEMINI_API_KEY : undefined);
-
-    if (!apiKey) {
-      return errorResponse("GEMINI_API_KEY is not configured in Cloudflare environment bindings.", 500);
+    // 1. Authenticate user from Supabase session Bearer token
+    const authResult = await authenticateRequest(request.headers, env);
+    if (!authResult.user) {
+      return errorResponse(authResult.error || "Authentication required", 401, "AUTH_REQUIRED");
     }
+    authenticatedUserId = authResult.user.id;
 
+    // 2. Validate request body and prompt BEFORE checking/charging quota
     let body: any;
     try {
       body = await request.json();
     } catch {
-      return errorResponse("Invalid JSON in request body", 400);
+      return errorResponse("Invalid JSON in request body", 400, "BAD_REQUEST");
     }
 
-    const { prompt } = body || {};
-    if (!prompt) {
-      return errorResponse("Prompt is required", 400);
+    const { prompt, provider, model } = body || {};
+    if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
+      return errorResponse("Prompt is required and must not be empty", 400, "BAD_REQUEST");
     }
 
-    const systemInstruction = `You are an expert invoice processing AI. Convert natural language requests into structured invoice details.
-Parse supplier names, customer names, date, invoice numbers, items, quantities, prices, tax rates (GST rates), and notes.
-If specific fields are not mentioned, use logical defaults or leave them empty (e.g. if tax is mentioned as 18% GST, set taxRate as 18).
-Standard GST rates are typically 0, 5, 12, 18, 28. Use those if not specified.
-Return the structured invoice details exactly matching the schema.`;
+    // 3. Concurrency-safe atomic AI quota enforcement
+    const quotaResult = await checkAndIncrementAiQuota(authenticatedUserId, env);
+    if (!quotaResult.allowed) {
+      return errorResponse(
+        quotaResult.message || "Monthly AI invoice generation limit reached. Please upgrade your plan.",
+        429,
+        "AI_QUOTA_EXCEEDED",
+        {
+          used: quotaResult.used,
+          limit: quotaResult.limit,
+          remaining: 0,
+          resetDate: quotaResult.resetDate,
+          planId: quotaResult.planId
+        }
+      );
+    }
 
-    const responseSchema = {
-      type: "OBJECT",
-      properties: {
-        invoiceNumber: { type: "STRING", description: "Invoice number or identifier, generate one if missing (e.g., INV-2026-001)" },
-        supplierName: { type: "STRING", description: "Name of the supplier or merchant" },
-        supplierGstin: { type: "STRING", description: "15-character GSTIN of the supplier if present" },
-        supplierAddress: { type: "STRING", description: "Supplier's address if present" },
-        customerName: { type: "STRING", description: "Name of the customer or buyer" },
-        customerGstin: { type: "STRING", description: "15-character GSTIN of the customer if present" },
-        customerAddress: { type: "STRING", description: "Customer's address if present" },
-        date: { type: "STRING", description: "Invoice date in YYYY-MM-DD format. Default to today if not provided." },
-        items: {
-          type: "ARRAY",
-          description: "List of items or services in the invoice",
-          items: {
-            type: "OBJECT",
-            properties: {
-              description: { type: "STRING", description: "Item description" },
-              quantity: { type: "NUMBER", description: "Quantity of the item (default to 1)" },
-              price: { type: "NUMBER", description: "Unit price of the item" },
-              taxRate: { type: "NUMBER", description: "GST rate percentage (e.g., 18 for 18% GST, default to 18 if not specified)" },
-              hsn: { type: "STRING", description: "4-to-8 digit HSN code if relevant (e.g., steel rods might be HSN 7214)" }
-            },
-            required: ["description", "quantity", "price", "taxRate"]
-          }
-        },
-        notes: { type: "STRING", description: "Any extra notes, payment instructions, or terms mentioned" }
-      },
-      required: ["supplierName", "customerName", "items"]
-    };
+    // 4. Invoke Multi-provider AI generation (Gemini verified default, OpenAI, Claude)
+    try {
+      const invoiceData = await generateInvoiceFromText({
+        prompt: prompt.trim(),
+        provider,
+        model,
+        env
+      });
 
-    const text = await callGeminiRest(apiKey, "gemini-3.8-flash", {
-      contents: [{ parts: [{ text: prompt }] }],
-      systemInstruction,
-      responseMimeType: "application/json",
-      responseSchema
-    });
-
-    const invoiceData = JSON.parse(text);
-    return jsonResponse(invoiceData);
+      return jsonResponse({
+        ...invoiceData,
+        _usage: {
+          used: quotaResult.used,
+          limit: quotaResult.limit,
+          remaining: quotaResult.remaining,
+          resetDate: quotaResult.resetDate,
+          planId: quotaResult.planId
+        }
+      });
+    } catch (providerError: any) {
+      // Refund quota since downstream provider call failed
+      await refundAiQuota(authenticatedUserId, env);
+      console.error("Downstream AI Provider error in create-from-text:", providerError);
+      return errorResponse(
+        providerError.message || "AI generation failed. Please try again.",
+        500,
+        "AI_PROVIDER_ERROR"
+      );
+    }
   } catch (err: any) {
     console.error("Cloudflare Pages Function error in create-from-text:", err);
-    return errorResponse(err.message || "Failed to process invoice creation request", 500);
+    return errorResponse(err.message || "Internal server error processing invoice generation", 500, "SERVER_ERROR");
   }
 };
 
@@ -84,7 +91,7 @@ export const onRequestOptions = async () => {
     headers: {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type"
+      "Access-Control-Allow-Headers": "Content-Type, Authorization"
     }
   });
 };

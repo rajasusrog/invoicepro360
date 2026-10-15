@@ -188,4 +188,50 @@ export interface LLMProviderInfo {
   supportedModels: string[];
 }
 
+export type SubscriptionTierId = 'basic' | 'standard' | 'professional' | 'elite' | 'ultra';
+
+export interface SubscriptionPlan {
+  id: SubscriptionTierId;
+  name: string;
+  priceInr: number;
+  invoiceQuota: number; // -1 for unlimited
+  aiGenerationQuota: number; // -1 for unlimited
+  customerQuota: number; // -1 for unlimited
+  teamMemberQuota: number;
+  isContactUs: boolean;
+  description: string;
+  features: string[];
+}
+
+export interface UserSubscription {
+  planId: SubscriptionTierId;
+  planName: string;
+  status: 'active' | 'trialing' | 'past_due' | 'canceled';
+  priceInr: number;
+  isContactUs: boolean;
+  invoicesUsed: number;
+  invoiceQuota: number;
+  invoicesRemaining: number;
+  aiGenerationsUsed: number;
+  aiGenerationQuota: number;
+  aiGenerationsRemaining: number;
+  customerQuota: number;
+  teamMemberQuota: number;
+  currentPeriodStart: string;
+  currentPeriodEnd: string;
+  features?: string[];
+}
+
+export interface QuotaCheckResult {
+  allowed: boolean;
+  code: 'OK' | 'AI_QUOTA_EXCEEDED' | 'INVOICE_QUOTA_EXCEEDED' | 'AUTH_REQUIRED' | 'ERROR';
+  message?: string;
+  planId?: string;
+  used?: number;
+  limit?: number;
+  remaining?: number;
+  resetDate?: string;
+}
+
+
 

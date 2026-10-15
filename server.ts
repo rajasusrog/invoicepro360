@@ -8,6 +8,14 @@ import {
   extractInvoiceFromOcr, 
   chatWithInvoices 
 } from "./functions/_providers";
+import {
+  authenticateRequest,
+  checkAndIncrementAiQuota,
+  refundAiQuota,
+  checkAndIncrementInvoiceQuota,
+  getUserSubscription,
+  getServerSupabase
+} from "./functions/_subscription";
 
 dotenv.config();
 
@@ -38,48 +46,121 @@ function getGeminiClient() {
   return aiInstance;
 }
 
-// 1. Natural Language Invoice Generator endpoint (Supports multi-provider: Gemini default, OpenAI, Claude)
+// 1. Natural Language Invoice Generator endpoint (Supports multi-provider + quota enforcement)
 app.post("/api/invoice/create-from-text", async (req, res) => {
+  let authenticatedUserId: string | null = null;
   try {
+    // 1. Authenticate user from Supabase session Bearer token
+    const authResult = await authenticateRequest(req.headers, process.env);
+    if (!authResult.user) {
+      return res.status(401).json({ error: authResult.error || "Authentication required", code: "AUTH_REQUIRED" });
+    }
+    authenticatedUserId = authResult.user.id;
+
     const { prompt, provider, model } = req.body;
-    if (!prompt) {
-      return res.status(400).json({ error: "Prompt is required" });
+    if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
+      return res.status(400).json({ error: "Prompt is required and must not be empty", code: "BAD_REQUEST" });
     }
 
-    const invoiceData = await generateInvoiceFromText({
-      prompt,
-      provider,
-      model,
-      env: process.env
-    });
+    // 2. Concurrency-safe atomic AI quota enforcement
+    const quotaResult = await checkAndIncrementAiQuota(authenticatedUserId, process.env);
+    if (!quotaResult.allowed) {
+      return res.status(429).json({
+        error: quotaResult.message || "Monthly AI generation limit reached. Please upgrade your plan.",
+        code: "AI_QUOTA_EXCEEDED",
+        used: quotaResult.used,
+        limit: quotaResult.limit,
+        remaining: 0,
+        resetDate: quotaResult.resetDate,
+        planId: quotaResult.planId
+      });
+    }
 
-    res.json(invoiceData);
+    try {
+      const invoiceData = await generateInvoiceFromText({
+        prompt: prompt.trim(),
+        provider,
+        model,
+        env: process.env
+      });
+
+      res.json({
+        ...invoiceData,
+        _usage: {
+          used: quotaResult.used,
+          limit: quotaResult.limit,
+          remaining: quotaResult.remaining,
+          resetDate: quotaResult.resetDate,
+          planId: quotaResult.planId
+        }
+      });
+    } catch (providerError: any) {
+      await refundAiQuota(authenticatedUserId, process.env);
+      console.error("Downstream AI Provider error in create-from-text:", providerError);
+      res.status(500).json({ error: providerError.message || "Failed to process invoice request", code: "AI_PROVIDER_ERROR" });
+    }
   } catch (error: any) {
     console.error("Error creating invoice from text:", error);
-    res.status(500).json({ error: error.message || "Failed to process invoice request" });
+    res.status(500).json({ error: error.message || "Failed to process invoice request", code: "SERVER_ERROR" });
   }
 });
 
-// 2. OCR Extraction endpoint (Supports multi-provider: Gemini vision default, OpenAI vision)
+// 2. OCR Extraction endpoint (Supports multi-provider + quota enforcement)
 app.post("/api/invoice/ocr", async (req, res) => {
+  let authenticatedUserId: string | null = null;
   try {
+    const authResult = await authenticateRequest(req.headers, process.env);
+    if (!authResult.user) {
+      return res.status(401).json({ error: authResult.error || "Authentication required", code: "AUTH_REQUIRED" });
+    }
+    authenticatedUserId = authResult.user.id;
+
     const { fileBase64, mimeType, provider, model } = req.body;
     if (!fileBase64 || !mimeType) {
-      return res.status(400).json({ error: "fileBase64 and mimeType are required" });
+      return res.status(400).json({ error: "fileBase64 and mimeType are required", code: "BAD_REQUEST" });
     }
 
-    const extractedData = await extractInvoiceFromOcr({
-      fileBase64,
-      mimeType,
-      provider,
-      model,
-      env: process.env
-    });
+    // Concurrency-safe atomic AI quota enforcement
+    const quotaResult = await checkAndIncrementAiQuota(authenticatedUserId, process.env);
+    if (!quotaResult.allowed) {
+      return res.status(429).json({
+        error: quotaResult.message || "Monthly AI generation quota reached. Upgrade your plan to extract more invoices.",
+        code: "AI_QUOTA_EXCEEDED",
+        used: quotaResult.used,
+        limit: quotaResult.limit,
+        remaining: 0,
+        resetDate: quotaResult.resetDate,
+        planId: quotaResult.planId
+      });
+    }
 
-    res.json(extractedData);
+    try {
+      const extractedData = await extractInvoiceFromOcr({
+        fileBase64,
+        mimeType,
+        provider,
+        model,
+        env: process.env
+      });
+
+      res.json({
+        ...extractedData,
+        _usage: {
+          used: quotaResult.used,
+          limit: quotaResult.limit,
+          remaining: quotaResult.remaining,
+          resetDate: quotaResult.resetDate,
+          planId: quotaResult.planId
+        }
+      });
+    } catch (providerError: any) {
+      await refundAiQuota(authenticatedUserId, process.env);
+      console.error("Downstream AI Provider error in ocr:", providerError);
+      res.status(500).json({ error: providerError.message || "Failed to extract invoice details", code: "AI_PROVIDER_ERROR" });
+    }
   } catch (error: any) {
     console.error("Error in OCR extraction:", error);
-    res.status(500).json({ error: error.message || "Failed to extract invoice details" });
+    res.status(500).json({ error: error.message || "Failed to extract invoice details", code: "SERVER_ERROR" });
   }
 });
 
@@ -303,9 +384,14 @@ Return a JSON array containing an object for each invoice with:
 // 6. AI Chat over Invoices endpoint (Supports multi-provider: Gemini default, OpenAI, Claude)
 app.post("/api/invoice/chat", async (req, res) => {
   try {
+    const authResult = await authenticateRequest(req.headers, process.env);
+    if (!authResult.user) {
+      return res.status(401).json({ error: authResult.error || "Authentication required", code: "AUTH_REQUIRED" });
+    }
+
     const { messages, invoices, provider, model } = req.body;
     if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({ error: "messages array is required" });
+      return res.status(400).json({ error: "messages array is required", code: "BAD_REQUEST" });
     }
 
     const result = await chatWithInvoices({
@@ -319,7 +405,142 @@ app.post("/api/invoice/chat", async (req, res) => {
     res.json(result);
   } catch (error: any) {
     console.error("Error in AI Invoice Chat:", error);
-    res.status(500).json({ error: error.message || "Chat failed to process" });
+    res.status(500).json({ error: error.message || "Chat failed to process", code: "SERVER_ERROR" });
+  }
+});
+
+// 7. Save Invoice with Server-Enforced Quota & User Isolation
+app.post("/api/invoice/save", async (req, res) => {
+  try {
+    const authResult = await authenticateRequest(req.headers, process.env);
+    if (!authResult.user) {
+      return res.status(401).json({ error: authResult.error || "Authentication required", code: "AUTH_REQUIRED" });
+    }
+    const userId = authResult.user.id;
+
+    const { invoice } = req.body || {};
+    if (!invoice || typeof invoice !== "object") {
+      return res.status(400).json({ error: "invoice object is required in request body", code: "BAD_REQUEST" });
+    }
+
+    if (!invoice.invoiceNumber || !invoice.supplierName || !invoice.customerName) {
+      return res.status(400).json({ error: "Missing required invoice fields (invoiceNumber, supplierName, customerName)", code: "BAD_REQUEST" });
+    }
+
+    // Concurrency-safe atomic invoice quota check & increment
+    const quotaResult = await checkAndIncrementInvoiceQuota(userId, process.env);
+    if (!quotaResult.allowed) {
+      return res.status(429).json({
+        error: quotaResult.message || "Monthly successful invoice quota reached. Please upgrade your plan.",
+        code: "INVOICE_QUOTA_EXCEEDED",
+        used: quotaResult.used,
+        limit: quotaResult.limit,
+        remaining: 0,
+        resetDate: quotaResult.resetDate,
+        planId: quotaResult.planId
+      });
+    }
+
+    // Persist to Supabase
+    const supabase = getServerSupabase(process.env);
+    if (!supabase || userId === "local-dev-user") {
+      return res.json({
+        success: true,
+        invoice,
+        _usage: {
+          used: quotaResult.used,
+          limit: quotaResult.limit,
+          remaining: quotaResult.remaining,
+          resetDate: quotaResult.resetDate,
+          planId: quotaResult.planId
+        }
+      });
+    }
+
+    const dbRow = {
+      id: invoice.id || `inv-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      user_id: userId,
+      invoice_number: invoice.invoiceNumber,
+      supplier_name: invoice.supplierName,
+      supplier_gstin: invoice.supplierGstin || null,
+      supplier_address: invoice.supplierAddress || null,
+      customer_name: invoice.customerName,
+      customer_gstin: invoice.customerGstin || null,
+      customer_address: invoice.customerAddress || null,
+      date: invoice.date || new Date().toISOString().substring(0, 10),
+      due_date: invoice.dueDate || null,
+      items: invoice.items || [],
+      subtotal: Number(invoice.subtotal) || 0,
+      cgst: Number(invoice.cgst) || 0,
+      sgst: Number(invoice.sgst) || 0,
+      igst: Number(invoice.igst) || 0,
+      tax_amount: Number(invoice.taxAmount) || 0,
+      total_amount: Number(invoice.totalAmount) || 0,
+      status: invoice.status || "unpaid",
+      payment_status: invoice.paymentStatus || "due",
+      amount_paid: Number(invoice.amountPaid) || 0,
+      balance_due: Number(invoice.balanceDue) || Number(invoice.totalAmount) || 0,
+      payments: invoice.payments || [],
+      category: invoice.category || "Sales",
+      expense_category: invoice.expenseCategory || null,
+      tags: invoice.tags || [],
+      notes: invoice.notes || null,
+      ocr_source: invoice.ocrSource || null,
+      created_at: invoice.createdAt || new Date().toISOString()
+    };
+
+    const { data: savedRow, error: insertError } = await supabase
+      .from("invoices")
+      .insert(dbRow)
+      .select()
+      .single();
+
+    if (insertError) {
+      try {
+        await supabase
+          .from("subscriptions")
+          .update({ invoices_used: Math.max(0, (quotaResult.used || 1) - 1) })
+          .eq("user_id", userId);
+      } catch (refundErr) {
+        console.error("Failed to refund invoice counter:", refundErr);
+      }
+      return res.status(500).json({ error: `Failed to persist invoice: ${insertError.message}`, code: "DB_INSERT_ERROR" });
+    }
+
+    res.json({
+      success: true,
+      invoice: {
+        ...invoice,
+        id: savedRow.id,
+        createdAt: savedRow.created_at
+      },
+      _usage: {
+        used: quotaResult.used,
+        limit: quotaResult.limit,
+        remaining: quotaResult.remaining,
+        resetDate: quotaResult.resetDate,
+        planId: quotaResult.planId
+      }
+    });
+  } catch (error: any) {
+    console.error("Error saving invoice:", error);
+    res.status(500).json({ error: error.message || "Failed to save invoice", code: "SERVER_ERROR" });
+  }
+});
+
+// 8. Get Subscription, Plan & Quota Details
+app.get("/api/subscription", async (req, res) => {
+  try {
+    const authResult = await authenticateRequest(req.headers, process.env);
+    if (!authResult.user) {
+      return res.status(401).json({ error: authResult.error || "Authentication required", code: "AUTH_REQUIRED" });
+    }
+
+    const subInfo = await getUserSubscription(authResult.user.id, process.env);
+    res.json(subInfo);
+  } catch (error: any) {
+    console.error("Error fetching subscription info:", error);
+    res.status(500).json({ error: error.message || "Failed to fetch subscription", code: "SERVER_ERROR" });
   }
 });
 

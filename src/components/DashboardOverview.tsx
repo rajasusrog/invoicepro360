@@ -14,10 +14,11 @@ import {
   Area,
   Legend
 } from "recharts";
-import { Invoice, CompanySettings } from "../types";
+import { Invoice, CompanySettings, UserSubscription } from "../types";
 import { formatRupees, validateInvoice, categoryStyleMap } from "../utils/invoiceUtils";
 import PaymentReminderModal from "./PaymentReminderModal";
 import MonthlyExpenditureSummary from "./MonthlyExpenditureSummary";
+import CurrentPlanCard from "./CurrentPlanCard";
 import { 
   FileText, 
   TrendingUp, 
@@ -51,9 +52,18 @@ interface DashboardOverviewProps {
   onSelectInvoice: (invoice: Invoice) => void;
   onRecordPayment?: (invoice: Invoice) => void;
   companySettings?: CompanySettings;
+  subscription?: UserSubscription | null;
+  onUpgradeClick?: () => void;
 }
 
-export default function DashboardOverview({ invoices, onSelectInvoice, onRecordPayment, companySettings }: DashboardOverviewProps) {
+export default function DashboardOverview({ 
+  invoices, 
+  onSelectInvoice, 
+  onRecordPayment, 
+  companySettings,
+  subscription = null,
+  onUpgradeClick = () => {}
+}: DashboardOverviewProps) {
   const [trendRange, setTrendRange] = useState<6 | 12>(6);
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>("all");
   const [selectedReminderInvoice, setSelectedReminderInvoice] = useState<Invoice | null>(null);
@@ -222,6 +232,12 @@ export default function DashboardOverview({ invoices, onSelectInvoice, onRecordP
           companySettings={companySettings}
         />
       )}
+
+      {/* Subscription Tier, Quota Limits & Monthly Usage Overview */}
+      <CurrentPlanCard
+        subscription={subscription}
+        onUpgradeClick={onUpgradeClick}
+      />
 
       {/* Overdue Invoices & Automated Reminder Alert Hub */}
       {overdueInvoices.length > 0 && (

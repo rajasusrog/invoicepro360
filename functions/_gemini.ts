@@ -16,8 +16,19 @@ export function jsonResponse(data: any, status = 200) {
   });
 }
 
-export function errorResponse(message: string, status = 500) {
-  return jsonResponse({ error: message }, status);
+export function errorResponse(
+  message: string, 
+  status = 500, 
+  code?: string, 
+  extra: Record<string, any> = {}
+) {
+  const resolvedCode = code || (
+    status === 401 ? "AUTH_REQUIRED" : 
+    status === 429 ? "QUOTA_EXCEEDED" : 
+    status === 400 ? "BAD_REQUEST" : 
+    "SERVER_ERROR"
+  );
+  return jsonResponse({ error: message, code: resolvedCode, ...extra }, status);
 }
 
 export async function callGeminiRest(

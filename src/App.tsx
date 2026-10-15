@@ -20,7 +20,9 @@ import {
   Loader2, 
   User, 
   Settings,
-  AlertCircle
+  AlertCircle,
+  CreditCard,
+  Crown
 } from "lucide-react";
 import { 
   supabase,
@@ -35,8 +37,13 @@ import {
   batchCreateInvoicesInDb,
   updateInvoiceInDb,
   deleteInvoiceFromDb,
-  isSupabaseConfigured
+  isSupabaseConfigured,
+  fetchUserSubscription
 } from "./lib/supabase";
+import { UserSubscription } from "./types";
+import { formatQuotaLabel } from "./utils/subscriptionPlans";
+import PlansAndPricing from "./components/PlansAndPricing";
+import QuotaExceededModal from "./components/QuotaExceededModal";
 import { flagRecurringInvoicesAsDue } from "./utils/recurringUtils";
 
 // High-fidelity Google logo vector icon
@@ -50,12 +57,23 @@ const GoogleIcon = () => (
 );
 
 export default function App() {
-  // Tabs: "dashboard" | "ledger" | "ai-creator" | "copilot" | "settings"
-  const [activeTab, setActiveTab] = useState<"dashboard" | "ledger" | "ai-creator" | "copilot" | "settings">("dashboard");
+  // Tabs: "dashboard" | "ledger" | "ai-creator" | "copilot" | "settings" | "plans"
+  const [activeTab, setActiveTab] = useState<"dashboard" | "ledger" | "ai-creator" | "copilot" | "settings" | "plans">("dashboard");
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   
   const [recordingPaymentInvoice, setRecordingPaymentInvoice] = useState<Invoice | null>(null);
+
+  // User Subscription & Quota State
+  const [userSubscription, setUserSubscription] = useState<UserSubscription | null>(null);
+  const [quotaModal, setQuotaModal] = useState<{
+    isOpen: boolean;
+    type: "ai" | "invoice";
+    used?: number;
+    limit?: number;
+    resetDate?: string;
+    planId?: string;
+  } | null>(null);
   
   // Cross-component communication states
   const [ledgerSearchQuery, setLedgerSearchQuery] = useState("");
@@ -98,6 +116,15 @@ export default function App() {
 
   const [dbError, setDbError] = useState<string | null>(null);
 
+  const refreshSubscription = async () => {
+    try {
+      const sub = await fetchUserSubscription();
+      setUserSubscription(sub);
+    } catch (e) {
+      console.warn("Failed to refresh subscription:", e);
+    }
+  };
+
   // Load user data from Supabase PostgreSQL (isolated by user_id)
   const loadUserData = async (user: SupabaseUser) => {
     setDbError(null);
@@ -112,6 +139,9 @@ export default function App() {
       const userInvoices = await fetchUserInvoices(user.id);
       const flagged = flagRecurringInvoicesAsDue(userInvoices);
       setInvoices(flagged.updatedInvoices);
+
+      // 3. Fetch User Subscription & Quota Limits
+      await refreshSubscription();
     } catch (error: any) {
       console.error("Error loading user data from Supabase:", error);
       setDbError(error?.message || "Failed to load invoices from database.");
@@ -239,7 +269,20 @@ export default function App() {
       setInvoices(updated);
       setSelectedInvoice(created);
       setActiveTab("ledger");
+      refreshSubscription();
     } catch (err: any) {
+      if (err.code === "INVOICE_QUOTA_EXCEEDED") {
+        setQuotaModal({
+          isOpen: true,
+          type: "invoice",
+          used: err.used,
+          limit: err.limit,
+          resetDate: err.resetDate,
+          planId: err.planId || userSubscription?.planId || "basic"
+        });
+        refreshSubscription();
+        return;
+      }
       console.error("Error creating invoice in Supabase:", err);
       setDbError(err?.message || "Failed to save invoice to database. Please check your Supabase connection.");
     }
@@ -257,7 +300,20 @@ export default function App() {
         setSelectedInvoice(savedInvoices[0]);
       }
       setActiveTab("ledger");
+      refreshSubscription();
     } catch (err: any) {
+      if (err.code === "INVOICE_QUOTA_EXCEEDED") {
+        setQuotaModal({
+          isOpen: true,
+          type: "invoice",
+          used: err.used,
+          limit: err.limit,
+          resetDate: err.resetDate,
+          planId: err.planId || userSubscription?.planId || "basic"
+        });
+        refreshSubscription();
+        return;
+      }
       console.error("Error batch creating invoices in Supabase:", err);
       setDbError(err?.message || "Failed to save batch invoices to database. Please check your Supabase connection.");
     }
@@ -628,13 +684,43 @@ export default function App() {
                 <Settings className="w-3.5 h-3.5 text-indigo-400" />
                 <span>Company Settings</span>
               </button>
+
+              <button 
+                onClick={() => setActiveTab("plans")}
+                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 ${
+                  activeTab === "plans" 
+                    ? "bg-white/10 text-white border border-white/5 shadow-sm" 
+                    : "text-slate-400 hover:text-white hover:bg-white/5"
+                }`}
+                id="tab-plans"
+              >
+                <CreditCard className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Plans & Pricing</span>
+              </button>
             </div>
 
-            {/* Invoices Count / Limits indicator */}
-            <div className="flex items-center space-x-3 text-xs bg-[#111113] border border-white/5 p-2.5 rounded-xl" id="tier-limits-widget">
+            {/* Dynamic Subscription & Usage Quota Widget */}
+            <div 
+              onClick={() => setActiveTab("plans")}
+              className="flex items-center space-x-3 text-xs bg-[#111113] hover:bg-[#17171a] border border-white/5 hover:border-indigo-500/30 p-2.5 rounded-xl transition-all cursor-pointer shadow-sm group" 
+              id="tier-limits-widget"
+              title="Click to view plans & usage quotas"
+            >
               <div className="space-y-0.5">
-                <span className="font-bold text-slate-300 block text-[10px]">ENTERPRISE PLAN: <b className="text-indigo-400">UNLIMITED</b></span>
-                <span className="text-slate-500 font-medium tracking-tight block">Active Invoices: <b>{invoices.length}</b></span>
+                <div className="flex items-center space-x-1.5">
+                  <Crown className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="font-bold text-slate-300 block text-[10px] uppercase tracking-wide">
+                    PLAN: <b className="text-indigo-400 font-extrabold">{userSubscription?.planName || "BASIC"}</b>
+                  </span>
+                  <span className="text-[9px] bg-indigo-500/10 text-indigo-400 group-hover:bg-indigo-500/20 px-1.5 py-0.2 rounded font-bold border border-indigo-500/20 transition-colors">
+                    Upgrade
+                  </span>
+                </div>
+                <div className="flex items-center space-x-2 text-[10px] text-slate-400 font-medium font-mono">
+                  <span>Invoices: <b className="text-white">{userSubscription?.invoicesUsed ?? invoices.length}</b>/{formatQuotaLabel(userSubscription?.invoiceQuota ?? 10)}</span>
+                  <span className="text-slate-600">•</span>
+                  <span>AI: <b className="text-white">{userSubscription?.aiGenerationsUsed ?? 0}</b>/{formatQuotaLabel(userSubscription?.aiGenerationQuota ?? 5)}</span>
+                </div>
               </div>
             </div>
           </div>
@@ -647,6 +733,8 @@ export default function App() {
                 onSelectInvoice={(inv) => setSelectedInvoice(inv)}
                 onRecordPayment={(inv) => setRecordingPaymentInvoice(inv)}
                 companySettings={companySettings}
+                subscription={userSubscription}
+                onUpgradeClick={() => setActiveTab("plans")}
               />
             )}
 
@@ -670,6 +758,7 @@ export default function App() {
                 onBatchInvoicesCreated={handleBatchInvoicesCreated}
                 onClose={() => setActiveTab("ledger")}
                 companySettings={companySettings}
+                onQuotaExceeded={(info) => setQuotaModal({ isOpen: true, ...info })}
               />
             )}
 
@@ -688,9 +777,33 @@ export default function App() {
                 onSave={handleSaveCompanySettings}
               />
             )}
+
+            {activeTab === "plans" && (
+              <PlansAndPricing 
+                subscription={userSubscription}
+                onSelectPlan={() => refreshSubscription()}
+              />
+            )}
           </div>
         </main>
       </div>
+
+      {/* Quota Exceeded Modal */}
+      {quotaModal && (
+        <QuotaExceededModal
+          isOpen={quotaModal.isOpen}
+          type={quotaModal.type}
+          used={quotaModal.used}
+          limit={quotaModal.limit}
+          resetDate={quotaModal.resetDate}
+          planId={quotaModal.planId}
+          onClose={() => setQuotaModal(null)}
+          onViewPlans={() => {
+            setQuotaModal(null);
+            setActiveTab("plans");
+          }}
+        />
+      )}
 
       {/* FOOTER */}
       <footer className="bg-[#111113] text-slate-500 py-6 text-xs border-t border-white/5 mt-12" id="app-footer">

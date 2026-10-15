@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient, User, Session } from '@supabase/supabase-js';
-import { Invoice, CompanySettings } from '../types';
+import { Invoice, CompanySettings, UserSubscription } from '../types';
 
 // Environment variables
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
@@ -89,6 +89,55 @@ export async function getSession(): Promise<Session | null> {
     return session;
   } catch (err) {
     console.error('Exception fetching session:', err);
+    return null;
+  }
+}
+
+/**
+ * Get HTTP Authorization headers containing the verified Supabase JWT Bearer token
+ */
+export async function getAuthHeaders(): Promise<Record<string, string>> {
+  const session = await getSession();
+  const token = session?.access_token;
+  if (!token) return {};
+  return {
+    Authorization: `Bearer ${token}`
+  };
+}
+
+/**
+ * Fetch current user subscription, quota limits, and monthly usage counters
+ */
+export async function fetchUserSubscription(): Promise<UserSubscription | null> {
+  try {
+    const headers = await getAuthHeaders();
+    const res = await fetch('/api/subscription', {
+      headers
+    });
+    if (!res.ok) {
+      return null;
+    }
+    const data = await res.json();
+    return {
+      planId: data.plan_id || 'basic',
+      planName: data.plan_name || 'Basic',
+      status: data.status || 'active',
+      priceInr: data.price_inr || 0,
+      isContactUs: Boolean(data.is_contact_us),
+      invoicesUsed: data.invoices_used || 0,
+      invoiceQuota: data.invoice_quota ?? 10,
+      invoicesRemaining: data.invoices_remaining ?? 10,
+      aiGenerationsUsed: data.ai_generations_used || 0,
+      aiGenerationQuota: data.ai_generation_quota ?? 5,
+      aiGenerationsRemaining: data.ai_generations_remaining ?? 5,
+      customerQuota: data.customer_quota ?? 25,
+      teamMemberQuota: data.team_member_quota ?? 1,
+      currentPeriodStart: data.current_period_start || new Date().toISOString(),
+      currentPeriodEnd: data.current_period_end || new Date(Date.now() + 30 * 86400000).toISOString(),
+      features: data.features
+    };
+  } catch (err) {
+    console.error('Error fetching user subscription:', err);
     return null;
   }
 }
@@ -317,55 +366,71 @@ export async function fetchUserInvoices(userId: string): Promise<Invoice[]> {
 }
 
 /**
- * Insert a new invoice into Supabase PostgreSQL
+ * Insert a new invoice into Supabase PostgreSQL with server-enforced quota verification
  */
 export async function createInvoiceInDb(invoice: Invoice, userId: string): Promise<Invoice> {
-  if (!isSupabaseConfigured) return invoice;
-
   try {
-    const row = mapInvoiceToDbRow(invoice, userId);
-    const { data, error } = await supabase
-      .from('invoices')
-      .insert(row)
-      .select()
-      .single();
+    const authHeaders = await getAuthHeaders();
 
-    if (error) {
-      console.error('Error creating invoice in Supabase:', error);
+    const response = await fetch('/api/invoice/save', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders
+      },
+      body: JSON.stringify({ invoice })
+    });
+
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      const error: any = new Error(result.error || 'Failed to save invoice');
+      error.code = result.code || (response.status === 429 ? 'INVOICE_QUOTA_EXCEEDED' : 'SAVE_ERROR');
+      error.used = result.used;
+      error.limit = result.limit;
+      error.resetDate = result.resetDate;
+      error.planId = result.planId;
       throw error;
     }
 
-    return mapDbRowToInvoice(data);
-  } catch (err) {
-    console.error('Exception creating invoice:', err);
+    return result.invoice || invoice;
+  } catch (err: any) {
+    if (err.code === 'INVOICE_QUOTA_EXCEEDED') {
+      throw err;
+    }
+    // If server save failed due to offline/network but client has Supabase directly configured, fallback
+    if (isSupabaseConfigured) {
+      console.warn('API save route failed, checking direct Supabase insert:', err.message);
+      const row = mapInvoiceToDbRow(invoice, userId);
+      const { data, error } = await supabase
+        .from('invoices')
+        .insert(row)
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error creating invoice in Supabase:', error);
+        throw error;
+      }
+      return mapDbRowToInvoice(data);
+    }
     throw err;
   }
 }
 
 /**
- * Insert multiple invoices into Supabase PostgreSQL in a single batch
+ * Insert multiple invoices into Supabase PostgreSQL with quota tracking
  */
 export async function batchCreateInvoicesInDb(invoices: Invoice[], userId: string): Promise<Invoice[]> {
-  if (!isSupabaseConfigured) return invoices;
   if (invoices.length === 0) return [];
+  const savedList: Invoice[] = [];
 
-  try {
-    const rows = invoices.map(inv => mapInvoiceToDbRow(inv, userId));
-    const { data, error } = await supabase
-      .from('invoices')
-      .insert(rows)
-      .select();
-
-    if (error) {
-      console.error('Error batch creating invoices in Supabase:', error);
-      throw error;
-    }
-
-    return (data || []).map(mapDbRowToInvoice);
-  } catch (err) {
-    console.error('Exception batch creating invoices:', err);
-    throw err;
+  for (const inv of invoices) {
+    const saved = await createInvoiceInDb(inv, userId);
+    savedList.push(saved);
   }
+
+  return savedList;
 }
 
 /**

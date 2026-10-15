@@ -1,87 +1,88 @@
-import { callGeminiRest, jsonResponse, errorResponse } from "../../_gemini";
+import { jsonResponse, errorResponse } from "../../_gemini";
+import { extractInvoiceFromOcr } from "../../_providers";
+import { authenticateRequest, checkAndIncrementAiQuota, refundAiQuota } from "../../_subscription";
 
 interface Env {
   GEMINI_API_KEY?: string;
+  OPENAI_API_KEY?: string;
   [key: string]: any;
 }
 
 export const onRequestPost = async (context: { request: Request; env: Env }) => {
+  let authenticatedUserId: string | null = null;
+  const { request, env } = context;
+
   try {
-    const { request, env } = context;
-    const apiKey = env.GEMINI_API_KEY || (typeof process !== "undefined" ? process.env?.GEMINI_API_KEY : undefined);
-
-    if (!apiKey) {
-      return errorResponse("GEMINI_API_KEY is not configured in Cloudflare environment bindings.", 500);
+    // 1. Authenticate user from Supabase session Bearer token
+    const authResult = await authenticateRequest(request.headers, env);
+    if (!authResult.user) {
+      return errorResponse(authResult.error || "Authentication required", 401, "AUTH_REQUIRED");
     }
+    authenticatedUserId = authResult.user.id;
 
+    // 2. Validate inputs BEFORE checking or charging AI quota
     let body: any;
     try {
       body = await request.json();
     } catch {
-      return errorResponse("Invalid JSON in request body", 400);
+      return errorResponse("Invalid JSON in request body", 400, "BAD_REQUEST");
     }
 
-    const { fileBase64, mimeType } = body || {};
+    const { fileBase64, mimeType, provider, model } = body || {};
     if (!fileBase64 || !mimeType) {
-      return errorResponse("fileBase64 and mimeType are required", 400);
+      return errorResponse("fileBase64 and mimeType are required for OCR processing", 400, "BAD_REQUEST");
     }
 
-    const imagePart = {
-      inlineData: {
+    // 3. Concurrency-safe atomic AI quota enforcement
+    const quotaResult = await checkAndIncrementAiQuota(authenticatedUserId, env);
+    if (!quotaResult.allowed) {
+      return errorResponse(
+        quotaResult.message || "Monthly AI generation quota reached. Upgrade your plan to extract more invoices.",
+        429,
+        "AI_QUOTA_EXCEEDED",
+        {
+          used: quotaResult.used,
+          limit: quotaResult.limit,
+          remaining: 0,
+          resetDate: quotaResult.resetDate,
+          planId: quotaResult.planId
+        }
+      );
+    }
+
+    // 4. Invoke Multi-provider OCR Extraction (Gemini vision default, OpenAI vision)
+    try {
+      const extractedData = await extractInvoiceFromOcr({
+        fileBase64,
         mimeType,
-        data: fileBase64,
-      },
-    };
+        provider,
+        model,
+        env
+      });
 
-    const textPart = {
-      text: `Analyze this invoice scan/image/photo and extract all relevant details into structured JSON format.
-Be highly accurate in reading the numeric values, dates, supplier and customer details, items, HSN codes, and GST rates.
-If any field is unreadable, leave it empty or make a best guess based on context.
-Return the structured invoice details exactly matching the schema.`,
-    };
-
-    const responseSchema = {
-      type: "OBJECT",
-      properties: {
-        invoiceNumber: { type: "STRING", description: "Invoice number or identifier found on the page" },
-        supplierName: { type: "STRING", description: "Legal or brand name of the supplier" },
-        supplierGstin: { type: "STRING", description: "15-character GSTIN of the supplier" },
-        supplierAddress: { type: "STRING", description: "Supplier's address" },
-        customerName: { type: "STRING", description: "Name of the customer or buyer" },
-        customerGstin: { type: "STRING", description: "15-character GSTIN of the customer" },
-        customerAddress: { type: "STRING", description: "Customer's address" },
-        date: { type: "STRING", description: "Invoice date in YYYY-MM-DD format (convert from the read date format)" },
-        items: {
-          type: "ARRAY",
-          description: "Items or services in the table",
-          items: {
-            type: "OBJECT",
-            properties: {
-              description: { type: "STRING", description: "Item name or description" },
-              quantity: { type: "NUMBER", description: "Quantity" },
-              price: { type: "NUMBER", description: "Unit price before tax" },
-              taxRate: { type: "NUMBER", description: "GST rate percentage (e.g. 18, 5, 12, 28, 0)" },
-              hsn: { type: "STRING", description: "HSN code if listed" }
-            },
-            required: ["description", "quantity", "price", "taxRate"]
-          }
-        },
-        notes: { type: "STRING", description: "Any other details, notes, terms, bank details found" }
-      },
-      required: ["supplierName", "customerName", "items"]
-    };
-
-    const text = await callGeminiRest(apiKey, "gemini-3.8-flash", {
-      contents: [{ parts: [imagePart, textPart] }],
-      responseMimeType: "application/json",
-      responseSchema
-    });
-
-    const extractedData = JSON.parse(text);
-    return jsonResponse(extractedData);
+      return jsonResponse({
+        ...extractedData,
+        _usage: {
+          used: quotaResult.used,
+          limit: quotaResult.limit,
+          remaining: quotaResult.remaining,
+          resetDate: quotaResult.resetDate,
+          planId: quotaResult.planId
+        }
+      });
+    } catch (providerError: any) {
+      // Refund quota since downstream provider call failed
+      await refundAiQuota(authenticatedUserId, env);
+      console.error("Downstream AI Provider error in ocr:", providerError);
+      return errorResponse(
+        providerError.message || "Failed to extract invoice details via OCR",
+        500,
+        "AI_PROVIDER_ERROR"
+      );
+    }
   } catch (err: any) {
     console.error("Cloudflare Pages Function error in ocr:", err);
-    return errorResponse(err.message || "Failed to extract invoice details via OCR", 500);
+    return errorResponse(err.message || "Internal server error during OCR processing", 500, "SERVER_ERROR");
   }
 };
 
@@ -91,7 +92,7 @@ export const onRequestOptions = async () => {
     headers: {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type"
+      "Access-Control-Allow-Headers": "Content-Type, Authorization"
     }
   });
 };
