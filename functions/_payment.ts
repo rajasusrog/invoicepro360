@@ -1,4 +1,4 @@
-import crypto from "crypto";
+import crypto from "node:crypto";
 import { getServerSupabase, CENTRAL_PLANS, SubscriptionTierId } from "./_subscription";
 
 export interface RazorpayConfig {
