@@ -235,3 +235,230 @@ CREATE POLICY "Users can view own usage history"
   ON public.usage_history FOR SELECT
   USING (auth.uid() = user_id);
 
+-- 10. Super Admin & Security Monitoring Schema
+ALTER TABLE public.profiles 
+  ADD COLUMN IF NOT EXISTS is_suspended BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS suspended_reason TEXT,
+  ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ DEFAULT NOW();
+
+CREATE TABLE IF NOT EXISTS public.admin_roles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE UNIQUE,
+  email TEXT NOT NULL UNIQUE,
+  role TEXT NOT NULL DEFAULT 'super_admin',
+  granted_by TEXT NOT NULL DEFAULT 'system_provision',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.admin_audit_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  admin_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  admin_email TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  justification TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ip_address TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.security_alerts (
+  id TEXT PRIMARY KEY DEFAULT ('alt-' || substr(md5(random()::text), 1, 10)),
+  user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  user_email TEXT,
+  rule_id TEXT NOT NULL,
+  risk_score INT NOT NULL DEFAULT 50,
+  severity TEXT NOT NULL DEFAULT 'medium',
+  category TEXT NOT NULL,
+  evidence_summary TEXT NOT NULL,
+  recommended_action TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'new',
+  containment_action TEXT,
+  contained_at TIMESTAMPTZ,
+  resolved_by TEXT,
+  resolved_at TIMESTAMPTZ,
+  resolution_notes TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.ai_request_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  user_email TEXT,
+  endpoint TEXT NOT NULL,
+  operation_type TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'gemini',
+  model TEXT NOT NULL DEFAULT 'gemini-3.8-flash',
+  status_code INT NOT NULL DEFAULT 200,
+  latency_ms INT NOT NULL DEFAULT 0,
+  tokens_estimated INT NOT NULL DEFAULT 0,
+  cost_estimated_usd NUMERIC(10, 6) NOT NULL DEFAULT 0,
+  risk_score INT NOT NULL DEFAULT 0,
+  detection_category TEXT,
+  abuse_flag BOOLEAN NOT NULL DEFAULT false,
+  ip_address TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.admin_security_config (
+  id TEXT PRIMARY KEY DEFAULT 'global',
+  auto_containment_enabled BOOLEAN NOT NULL DEFAULT true,
+  high_risk_threshold INT NOT NULL DEFAULT 80,
+  medium_risk_threshold INT NOT NULL DEFAULT 50,
+  rate_limit_requests_per_minute INT NOT NULL DEFAULT 30,
+  ai_abuse_detection_enabled BOOLEAN NOT NULL DEFAULT true,
+  retention_days_audit_logs INT NOT NULL DEFAULT 365,
+  retention_days_ai_telemetry INT NOT NULL DEFAULT 90,
+  updated_by TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE public.admin_roles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.admin_audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.security_alerts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.ai_request_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.admin_security_config ENABLE ROW LEVEL SECURITY;
+
+-- 8. Subscription Payments Ledger & Idempotent Activation
+ALTER TABLE public.subscriptions
+  ADD COLUMN IF NOT EXISTS billing_cycle TEXT NOT NULL DEFAULT 'monthly',
+  ADD COLUMN IF NOT EXISTS payment_reference TEXT,
+  ADD COLUMN IF NOT EXISTS auto_renew BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '1 month');
+
+CREATE TABLE IF NOT EXISTS public.subscription_payments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  plan_id TEXT NOT NULL REFERENCES public.subscription_plans(id),
+  billing_cycle TEXT NOT NULL DEFAULT 'monthly',
+  amount_inr NUMERIC NOT NULL,
+  tax_inr NUMERIC NOT NULL DEFAULT 0,
+  currency TEXT NOT NULL DEFAULT 'INR',
+  status TEXT NOT NULL DEFAULT 'pending',
+  gateway TEXT NOT NULL DEFAULT 'razorpay',
+  gateway_order_id TEXT UNIQUE,
+  gateway_payment_id TEXT UNIQUE,
+  gateway_signature TEXT,
+  manual_admin_granted BOOLEAN NOT NULL DEFAULT false,
+  granted_by TEXT,
+  justification TEXT,
+  receipt_url TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  paid_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_sub_payments_user_id ON public.subscription_payments(user_id);
+CREATE INDEX IF NOT EXISTS idx_sub_payments_order_id ON public.subscription_payments(gateway_order_id);
+CREATE INDEX IF NOT EXISTS idx_sub_payments_status ON public.subscription_payments(status);
+
+ALTER TABLE public.subscription_payments ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view own subscription payments" ON public.subscription_payments;
+CREATE POLICY "Users can view own subscription payments"
+  ON public.subscription_payments FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE OR REPLACE FUNCTION public.activate_subscription_payment(
+  p_payment_id UUID,
+  p_gateway_payment_id TEXT,
+  p_gateway_signature TEXT,
+  p_status TEXT DEFAULT 'paid'
+)
+RETURNS JSONB AS $$
+DECLARE
+  v_payment RECORD;
+  v_period_interval INTERVAL;
+  v_new_end TIMESTAMPTZ;
+BEGIN
+  SELECT * INTO v_payment
+  FROM public.subscription_payments
+  WHERE id = p_payment_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('success', false, 'code', 'PAYMENT_NOT_FOUND', 'message', 'Payment record does not exist');
+  END IF;
+
+  IF v_payment.status = 'paid' THEN
+    RETURN jsonb_build_object('success', true, 'code', 'ALREADY_ACTIVATED', 'message', 'Payment already processed', 'plan_id', v_payment.plan_id);
+  END IF;
+
+  UPDATE public.subscription_payments
+  SET 
+    status = p_status,
+    gateway_payment_id = COALESCE(p_gateway_payment_id, gateway_payment_id),
+    gateway_signature = COALESCE(p_gateway_signature, gateway_signature),
+    paid_at = NOW()
+  WHERE id = p_payment_id;
+
+  IF v_payment.billing_cycle = 'annual' THEN
+    v_period_interval := INTERVAL '1 year';
+  ELSE
+    v_period_interval := INTERVAL '1 month';
+  END IF;
+
+  v_new_end := NOW() + v_period_interval;
+
+  INSERT INTO public.subscriptions (
+    user_id,
+    plan_id,
+    status,
+    billing_cycle,
+    payment_reference,
+    current_period_start,
+    current_period_end,
+    expires_at,
+    invoices_used,
+    ai_generations_used,
+    updated_at
+  )
+  VALUES (
+    v_payment.user_id,
+    v_payment.plan_id,
+    'active',
+    v_payment.billing_cycle,
+    p_gateway_payment_id,
+    NOW(),
+    v_new_end,
+    v_new_end,
+    0,
+    0,
+    NOW()
+  )
+  ON CONFLICT (user_id) DO UPDATE SET
+    plan_id = EXCLUDED.plan_id,
+    status = 'active',
+    billing_cycle = EXCLUDED.billing_cycle,
+    payment_reference = EXCLUDED.payment_reference,
+    current_period_start = EXCLUDED.current_period_start,
+    current_period_end = EXCLUDED.current_period_end,
+    expires_at = EXCLUDED.expires_at,
+    invoices_used = 0,
+    ai_generations_used = 0,
+    updated_at = NOW();
+
+  INSERT INTO public.usage_history (user_id, action_type, metadata)
+  VALUES (
+    v_payment.user_id,
+    'subscription_activated',
+    jsonb_build_object(
+      'payment_id', v_payment.id,
+      'plan_id', v_payment.plan_id,
+      'amount_inr', v_payment.amount_inr,
+      'billing_cycle', v_payment.billing_cycle,
+      'gateway_payment_id', p_gateway_payment_id,
+      'expires_at', v_new_end
+    )
+  );
+
+  RETURN jsonb_build_object('success', true, 'code', 'ACTIVATED', 'plan_id', v_payment.plan_id, 'expires_at', v_new_end);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+
+

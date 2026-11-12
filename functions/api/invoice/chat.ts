@@ -1,6 +1,6 @@
 import { jsonResponse, errorResponse } from "../../_gemini";
 import { chatWithInvoices } from "../../_providers";
-import { authenticateRequest } from "../../_subscription";
+import { authenticateRequest, checkAndIncrementAiQuota, refundAiQuota } from "../../_subscription";
 
 interface Env {
   GEMINI_API_KEY?: string;
@@ -10,6 +10,7 @@ interface Env {
 
 export const onRequestPost = async (context: { request: Request; env: Env }) => {
   const { request, env } = context;
+  let authenticatedUserId: string | null = null;
 
   try {
     // 1. Authenticate user from Supabase session Bearer token
@@ -17,8 +18,9 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
     if (!authResult.user) {
       return errorResponse(authResult.error || "Authentication required", 401, "AUTH_REQUIRED");
     }
+    authenticatedUserId = authResult.user.id;
 
-    // 2. Validate inputs
+    // 2. Validate inputs before checking quota
     let body: any;
     try {
       body = await request.json();
@@ -31,7 +33,24 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
       return errorResponse("messages array is required and must not be empty", 400, "BAD_REQUEST");
     }
 
-    // 3. Multi-provider Chat processing
+    // 3. Enforce AI generation quota
+    const quotaResult = await checkAndIncrementAiQuota(authenticatedUserId, env);
+    if (!quotaResult.allowed) {
+      return errorResponse(
+        quotaResult.message || "Monthly AI generation quota reached. Please upgrade your plan.",
+        429,
+        "AI_QUOTA_EXCEEDED",
+        {
+          used: quotaResult.used,
+          limit: quotaResult.limit,
+          remaining: 0,
+          resetDate: quotaResult.resetDate,
+          planId: quotaResult.planId
+        }
+      );
+    }
+
+    // 4. Multi-provider Chat processing
     const response = await chatWithInvoices({
       messages,
       invoices: Array.isArray(invoices) ? invoices : [],
@@ -40,8 +59,20 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
       env
     });
 
-    return jsonResponse(response);
+    return jsonResponse({
+      ...response,
+      _usage: {
+        used: quotaResult.used,
+        limit: quotaResult.limit,
+        remaining: quotaResult.remaining,
+        resetDate: quotaResult.resetDate,
+        planId: quotaResult.planId
+      }
+    });
   } catch (err: any) {
+    if (authenticatedUserId) {
+      await refundAiQuota(authenticatedUserId, env);
+    }
     console.error("Cloudflare Pages Function error in chat:", err);
     return errorResponse(err.message || "Failed to process chat with invoices", 500, "SERVER_ERROR");
   }

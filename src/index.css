@@ -1,46 +1,209 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
+:root {
+  --unikorn-navy: #0B1426;
+  --unikorn-navy-hover: #152340;
+  --unikorn-bg: #F6F5F1;
+  --unikorn-surface: #FFFFFF;
+  --unikorn-gold: #C49A36;
+  --unikorn-gold-soft: rgba(196, 154, 54, 0.14);
+  --unikorn-text: #263449;
+  --unikorn-muted: #526176;
+  --unikorn-border: #E4DFD5;
+  --unikorn-success: #15803D;
+  --unikorn-warning: #B45309;
+  --unikorn-danger: #B91C1C;
+}
+
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-sans: "Inter", "Noto Sans Tamil", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
-  --font-display: "Space Grotesk", sans-serif;
+  --font-display: "Inter", "Noto Sans Tamil", ui-sans-serif, system-ui, sans-serif;
 
-  --color-brand-50: rgba(99, 102, 241, 0.08);
-  --color-brand-100: rgba(99, 102, 241, 0.15);
-  --color-brand-500: #6366f1;
-  --color-brand-600: #4f46e5;
-  --color-brand-700: #4338ca;
+  --color-brand-50: rgba(196, 154, 54, 0.10);
+  --color-brand-100: rgba(196, 154, 54, 0.20);
+  --color-brand-500: #0B1426;
+  --color-brand-600: #0B1426;
+  --color-brand-700: #152340;
 }
 
-/* Custom styles for polished Elegant Dark theme */
+/* UNIKORN360 Business Intelligence Standard Typography & Base Palette */
 body {
-  background-color: #0A0A0B;
-  color: #cbd5e1;
+  background-color: var(--unikorn-bg);
+  color: var(--unikorn-text);
   font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Override default scrollbars to match Dark Theme */
+/* Visible accessible keyboard focus ring across all interactive elements */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--unikorn-gold);
+  outline-offset: 2px;
+}
+
+/* Tabular figures for numbers and financial tables */
+.tabular-nums,
+table td,
+.font-mono {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Standardised Scrollbars for Warm White Canvas */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.02);
+  background: #F6F5F1;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: #CFC8BA;
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: #AFA694;
+}
+
+/* Scoped theme harmonization for legacy dark utility classes inside workspace content
+   (Excludes the Navy #0B1426 left sidebar .unikorn-sidebar and printable invoice preview) */
+.unikorn-theme-scope [class*="bg-[#0A0A0B]"],
+.unikorn-theme-scope [class*="bg-[#0a0a0b]"],
+.unikorn-theme-scope [class*="bg-[#0c0c0e]"],
+.unikorn-theme-scope [class*="bg-[#0d0e11]"],
+.unikorn-theme-scope [class*="bg-[#090d16]"] {
+  background-color: var(--unikorn-bg) !important;
+  color: var(--unikorn-text) !important;
+}
+
+.unikorn-theme-scope [class*="bg-[#111113]"],
+.unikorn-theme-scope [class*="bg-[#141417]"],
+.unikorn-theme-scope [class*="bg-[#16161a]"],
+.unikorn-theme-scope [class*="bg-[#17171a]"],
+.unikorn-theme-scope [class*="bg-[#18181b]"],
+.unikorn-theme-scope .bg-slate-900,
+.unikorn-theme-scope .bg-slate-950,
+.unikorn-theme-scope .bg-slate-900\/60,
+.unikorn-theme-scope .bg-slate-900\/50,
+.unikorn-theme-scope .bg-slate-900\/40,
+.unikorn-theme-scope .bg-slate-950\/60 {
+  background-color: var(--unikorn-surface) !important;
+  color: var(--unikorn-text) !important;
+  border-color: var(--unikorn-border) !important;
+}
+
+.unikorn-theme-scope [class*="bg-white/5"],
+.unikorn-theme-scope [class*="bg-white/[0.02]"],
+.unikorn-theme-scope [class*="bg-white/[0.03]"],
+.unikorn-theme-scope .bg-slate-800,
+.unikorn-theme-scope .bg-slate-800\/50 {
+  background-color: var(--unikorn-bg) !important;
+  border-color: var(--unikorn-border) !important;
+}
+
+.unikorn-theme-scope [class*="border-white/5"],
+.unikorn-theme-scope [class*="border-white/10"],
+.unikorn-theme-scope [class*="border-white/15"],
+.unikorn-theme-scope .border-slate-800,
+.unikorn-theme-scope .border-slate-800\/80,
+.unikorn-theme-scope .border-slate-700 {
+  border-color: var(--unikorn-border) !important;
+}
+
+.unikorn-theme-scope .divide-white\/5 > :not([hidden]) ~ :not([hidden]),
+.unikorn-theme-scope .divide-slate-800 > :not([hidden]) ~ :not([hidden]),
+.unikorn-theme-scope .divide-slate-800\/60 > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--unikorn-border) !important;
+}
+
+/* Text contrast adjustments inside workspace cards (preserving white text on Navy/Indigo/Colored primary buttons) */
+.unikorn-theme-scope h1.text-white,
+.unikorn-theme-scope h2.text-white,
+.unikorn-theme-scope h3.text-white,
+.unikorn-theme-scope h4.text-white,
+.unikorn-theme-scope p.text-white,
+.unikorn-theme-scope div.text-white:not([class*="bg-[#0B1426]"]):not([class*="bg-indigo-"]):not([class*="bg-emerald-"]):not([class*="bg-rose-"]),
+.unikorn-theme-scope span.text-white:not(button *):not([class*="bg-"]),
+.unikorn-theme-scope td.text-white,
+.unikorn-theme-scope th.text-white,
+.unikorn-theme-scope b.text-white,
+.unikorn-theme-scope .text-slate-100,
+.unikorn-theme-scope .text-slate-200 {
+  color: var(--unikorn-navy) !important;
+}
+
+.unikorn-theme-scope .text-slate-300 {
+  color: var(--unikorn-text) !important;
+}
+
+.unikorn-theme-scope .text-slate-400,
+.unikorn-theme-scope .text-slate-500 {
+  color: var(--unikorn-muted) !important;
+}
+
+/* Primary Action Buttons in workspace use UNIKORN360 Navy #0B1426 with white text */
+.unikorn-theme-scope button.bg-indigo-600,
+.unikorn-theme-scope a.bg-indigo-600 {
+  background-color: var(--unikorn-navy) !important;
+  color: #FFFFFF !important;
+  border-color: var(--unikorn-navy) !important;
+}
+.unikorn-theme-scope button.bg-indigo-600:hover,
+.unikorn-theme-scope a.bg-indigo-600:hover {
+  background-color: var(--unikorn-navy-hover) !important;
+}
+.unikorn-theme-scope button.bg-indigo-600 *,
+.unikorn-theme-scope button[class*="bg-[#0B1426]"] * {
+  color: #FFFFFF !important;
+}
+
+/* Accent text & subtle highlights mapped to Navy / Gold */
+.unikorn-theme-scope .text-indigo-400,
+.unikorn-theme-scope .text-indigo-300 {
+  color: var(--unikorn-navy) !important;
+}
+
+.unikorn-theme-scope .bg-indigo-500\/10,
+.unikorn-theme-scope .bg-indigo-500\/15,
+.unikorn-theme-scope .bg-indigo-500\/20 {
+  background-color: var(--unikorn-gold-soft) !important;
+  border-color: var(--unikorn-gold) !important;
+}
+
+/* Form inputs, selects, and textareas inside workspace */
+.unikorn-theme-scope input:not([type="checkbox"]):not([type="radio"]),
+.unikorn-theme-scope select,
+.unikorn-theme-scope textarea {
+  background-color: #FFFFFF !important;
+  color: var(--unikorn-text) !important;
+  border-color: var(--unikorn-border) !important;
+}
+
+/* Semantic Status Readability on Light Surfaces */
+.unikorn-theme-scope .text-emerald-400,
+.unikorn-theme-scope .text-emerald-300 {
+  color: var(--unikorn-success) !important;
+}
+.unikorn-theme-scope .text-amber-400,
+.unikorn-theme-scope .text-amber-300 {
+  color: var(--unikorn-warning) !important;
+}
+.unikorn-theme-scope .text-rose-400,
+.unikorn-theme-scope .text-rose-300 {
+  color: var(--unikorn-danger) !important;
 }
 
 /* Slide up and fade-in utility animations */
 @keyframes fadeInUp {
   from {
     opacity: 0;
-    transform: translateY(12px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
@@ -49,12 +212,12 @@ body {
 }
 
 .animate-fade-in-up {
-  animation: fadeInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: fadeInUp 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
-/* Custom styles for printing */
+/* Custom styles for printing — preserves exact invoice document layout */
 @media print {
-  /* Hide the rest of the application */
+  #app-sidebar,
   #app-header,
   #app-footer,
   #tab-controls-row,
@@ -68,7 +231,6 @@ body {
     display: none !important;
   }
 
-  /* Position the modal wrapper as a normal document on the page */
   #invoice-viewer-modal {
     position: relative !important;
     display: block !important;
@@ -131,13 +293,11 @@ body {
     border-radius: 0 !important;
   }
 
-  /* Force background white and text dark on print */
   body {
     background: white !important;
     color: #111113 !important;
   }
 
-  /* Override text and border colors of nested elements for high-contrast readability */
   #printable-document * {
     color: #111113 !important;
     background-color: transparent !important;
@@ -150,21 +310,6 @@ body {
     color: #000000 !important;
   }
 
-  #printable-document span.text-indigo-400 {
-    color: #4f46e5 !important; /* Standout slate-indigo for brand name on print */
-    font-weight: 800 !important;
-  }
-
-  /* Highlight payment status borders nicely */
-  #printable-document span.border-emerald-500\/50,
-  #printable-document span.border-amber-500\/50,
-  #printable-document span.border-rose-500\/50 {
-    border: 1px solid #111113 !important;
-    color: #111113 !important;
-    background: transparent !important;
-  }
-
-  /* Clean print borders for the items table */
   #preview-items-table {
     width: 100% !important;
     border-collapse: collapse !important;
@@ -180,12 +325,5 @@ body {
   #preview-items-table td {
     border-bottom: 1px solid #cbd5e1 !important;
     padding: 10px 0 !important;
-  }
-
-  /* Grand total display on print */
-  #printable-document .text-indigo-400.text-base {
-    color: #000000 !important;
-    font-weight: 800 !important;
-    font-size: 1.15rem !important;
   }
 }

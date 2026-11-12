@@ -123,3 +123,51 @@ export function formatQuotaLabel(quota: number): string {
   if (quota === -1) return 'Unlimited';
   return quota.toLocaleString('en-IN');
 }
+
+/**
+ * Calculates checkout pricing with 18% GST (CGST 9% + SGST 9%) and 20% annual discount.
+ */
+export function calculateCheckoutPricing(planId: SubscriptionTierId, billingCycle: 'monthly' | 'annual' | 'lifetime' = 'monthly') {
+  const plan = SUBSCRIPTION_PLANS[planId];
+  if (!plan || plan.isContactUs || plan.priceInr === 0) {
+    return {
+      baseAmountInr: 0,
+      discountAmountInr: 0,
+      taxAmountInr: 0,
+      totalAmountInr: 0,
+      cgstInr: 0,
+      sgstInr: 0,
+      isFreeOrContact: true
+    };
+  }
+
+  const monthlyBase = plan.priceInr;
+  let baseAmount = monthlyBase;
+  let discountAmount = 0;
+
+  if (billingCycle === 'annual') {
+    const fullAnnual = monthlyBase * 12;
+    discountAmount = Math.round(fullAnnual * 0.20);
+    baseAmount = fullAnnual - discountAmount;
+  } else if (billingCycle === 'lifetime') {
+    baseAmount = monthlyBase * 30;
+  }
+
+  // 18% Indian GST split into CGST (9%) + SGST (9%)
+  const cgst = Math.round(baseAmount * 0.09 * 100) / 100;
+  const sgst = Math.round(baseAmount * 0.09 * 100) / 100;
+  const totalTax = Math.round((cgst + sgst) * 100) / 100;
+  const totalAmount = Math.round((baseAmount + totalTax) * 100) / 100;
+
+  return {
+    baseAmountInr: baseAmount,
+    discountAmountInr: discountAmount,
+    taxAmountInr: totalTax,
+    cgstInr: cgst,
+    sgstInr: sgst,
+    totalAmountInr: totalAmount,
+    totalAmountPaise: Math.round(totalAmount * 100),
+    isFreeOrContact: false
+  };
+}
+

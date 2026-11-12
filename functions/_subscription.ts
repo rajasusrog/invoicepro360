@@ -81,16 +81,14 @@ export interface QuotaResult {
  * Creates a server-side Supabase client for Cloudflare Pages Functions or Express
  */
 export function getServerSupabase(env: any = {}): SupabaseClient | null {
-  const url = 
-    env.VITE_SUPABASE_URL || 
-    env.SUPABASE_URL || 
-    (typeof process !== "undefined" ? (process.env?.VITE_SUPABASE_URL || process.env?.SUPABASE_URL) : undefined);
+  const hasExplicitEnv = env && env !== process.env && ("VITE_SUPABASE_URL" in env || "SUPABASE_URL" in env);
+  const url = hasExplicitEnv
+    ? (env.VITE_SUPABASE_URL || env.SUPABASE_URL)
+    : (env.VITE_SUPABASE_URL || env.SUPABASE_URL || (typeof process !== "undefined" ? (process.env?.VITE_SUPABASE_URL || process.env?.SUPABASE_URL) : undefined));
     
-  const key = 
-    env.SUPABASE_SERVICE_ROLE_KEY || 
-    env.VITE_SUPABASE_ANON_KEY || 
-    env.SUPABASE_ANON_KEY || 
-    (typeof process !== "undefined" ? (process.env?.SUPABASE_SERVICE_ROLE_KEY || process.env?.VITE_SUPABASE_ANON_KEY || process.env?.SUPABASE_ANON_KEY) : undefined);
+  const key = hasExplicitEnv
+    ? (env.SUPABASE_SERVICE_ROLE_KEY || env.VITE_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY)
+    : (env.SUPABASE_SERVICE_ROLE_KEY || env.VITE_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY || (typeof process !== "undefined" ? (process.env?.SUPABASE_SERVICE_ROLE_KEY || process.env?.VITE_SUPABASE_ANON_KEY || process.env?.SUPABASE_ANON_KEY) : undefined));
 
   if (!url || !key || url.includes("your-supabase-project-url") || key.includes("your-supabase-publishable")) {
     return null;
@@ -158,7 +156,28 @@ export async function authenticateRequest(
       };
     }
 
-    return { user, error: null, code: "OK" };
+    let isSuspended = false;
+    try {
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("is_suspended")
+        .eq("id", user.id)
+        .maybeSingle();
+      if (profile) {
+        isSuspended = Boolean(profile.is_suspended);
+      }
+    } catch {
+      // Ignore if table/column not populated
+    }
+
+    return { 
+      user: {
+        ...user,
+        is_suspended: isSuspended
+      }, 
+      error: null, 
+      code: "OK" 
+    };
   } catch (err: any) {
     return {
       user: null,
@@ -175,57 +194,26 @@ export async function checkAndIncrementAiQuota(
   userId: string,
   env: any = {}
 ): Promise<QuotaResult> {
-  const supabase = getServerSupabase(env);
-  if (!supabase || userId === "local-dev-user") {
-    return {
-      allowed: true,
-      code: "OK",
-      planId: "basic",
-      used: 1,
-      limit: 5,
-      remaining: 4,
-      resetDate: new Date(Date.now() + 30 * 86400000).toISOString()
-    };
-  }
-
-  try {
-    const { data, error } = await supabase.rpc("check_and_increment_ai_quota", {
-      p_user_id: userId
-    });
-
-    if (error) {
-      console.warn("RPC check_and_increment_ai_quota failed or missing, falling back to table query:", error.message);
-      return fallbackCheckAndIncrement(supabase, userId, "ai_generation");
-    }
-
-    return {
-      allowed: Boolean(data?.allowed),
-      code: data?.code || (data?.allowed ? "OK" : "AI_QUOTA_EXCEEDED"),
-      message: data?.message,
-      planId: data?.plan_id,
-      used: data?.used,
-      limit: data?.limit,
-      remaining: data?.remaining,
-      resetDate: data?.reset_date
-    };
-  } catch (err: any) {
-    console.error("Exception in checkAndIncrementAiQuota:", err);
-    return fallbackCheckAndIncrement(supabase, userId, "ai_generation");
-  }
+  const { checkAndReserveAiQuota } = await import("./_billing");
+  const res = await checkAndReserveAiQuota(userId, env);
+  return {
+    allowed: res.allowed,
+    code: res.code as any,
+    message: res.message,
+    planId: res.planId,
+    used: res.used,
+    limit: res.limit,
+    remaining: res.remaining,
+    resetDate: res.resetDate
+  };
 }
 
 /**
  * Decrements AI generation counter if downstream model call failed after quota was charged.
  */
 export async function refundAiQuota(userId: string, env: any = {}): Promise<void> {
-  const supabase = getServerSupabase(env);
-  if (!supabase || userId === "local-dev-user") return;
-
-  try {
-    await supabase.rpc("refund_ai_quota", { p_user_id: userId });
-  } catch (err) {
-    console.warn("Failed to refund AI quota:", err);
-  }
+  const { rollbackAiQuota } = await import("./_billing");
+  await rollbackAiQuota(userId, env);
 }
 
 /**
@@ -235,43 +223,18 @@ export async function checkAndIncrementInvoiceQuota(
   userId: string,
   env: any = {}
 ): Promise<QuotaResult> {
-  const supabase = getServerSupabase(env);
-  if (!supabase || userId === "local-dev-user") {
-    return {
-      allowed: true,
-      code: "OK",
-      planId: "basic",
-      used: 1,
-      limit: 10,
-      remaining: 9,
-      resetDate: new Date(Date.now() + 30 * 86400000).toISOString()
-    };
-  }
-
-  try {
-    const { data, error } = await supabase.rpc("check_and_increment_invoice_quota", {
-      p_user_id: userId
-    });
-
-    if (error) {
-      console.warn("RPC check_and_increment_invoice_quota failed or missing, falling back to table query:", error.message);
-      return fallbackCheckAndIncrement(supabase, userId, "invoice_created");
-    }
-
-    return {
-      allowed: Boolean(data?.allowed),
-      code: data?.code || (data?.allowed ? "OK" : "INVOICE_QUOTA_EXCEEDED"),
-      message: data?.message,
-      planId: data?.plan_id,
-      used: data?.used,
-      limit: data?.limit,
-      remaining: data?.remaining,
-      resetDate: data?.reset_date
-    };
-  } catch (err: any) {
-    console.error("Exception in checkAndIncrementInvoiceQuota:", err);
-    return fallbackCheckAndIncrement(supabase, userId, "invoice_created");
-  }
+  const { checkAndReserveBatchInvoiceQuota } = await import("./_billing");
+  const res = await checkAndReserveBatchInvoiceQuota(userId, 1, undefined, env);
+  return {
+    allowed: res.allowed,
+    code: res.code as any,
+    message: res.message,
+    planId: res.planId,
+    used: res.used,
+    limit: res.limit,
+    remaining: res.remaining,
+    resetDate: res.resetDate
+  };
 }
 
 /**
@@ -281,39 +244,42 @@ export async function getUserSubscription(
   userId: string,
   env: any = {}
 ): Promise<any> {
+  const { getUserEntitlement, findBillingPlanVariant } = await import("./_billing");
+  const ent = await getUserEntitlement(userId, env);
+  const plan = await findBillingPlanVariant(
+    ent.planCode,
+    ent.billingModel === "free" ? "monthly" : ent.billingModel,
+    env
+  );
+  return {
+    plan_id: ent.planCode,
+    plan_name: ent.planName,
+    status: ent.status === "cancelled" ? "canceled" : ent.status,
+    billing_model: ent.billingModel,
+    billing_cycle: ent.billingModel === "free" ? "monthly" : ent.billingModel,
+    lifetime_entitlement: ent.lifetimeEntitlement,
+    cancel_at_period_end: ent.cancelAtPeriodEnd,
+    price_inr: plan?.pricePaise ? plan.pricePaise / 100 : 0,
+    is_contact_us: ent.planCode === "ultra",
+    invoices_used: ent.invoicesUsed,
+    invoice_quota: ent.invoiceQuota,
+    invoices_remaining: ent.invoiceQuota === -1 ? -1 : Math.max(0, ent.invoiceQuota - ent.invoicesUsed),
+    ai_generations_used: ent.aiGenerationsUsed,
+    ai_generation_quota: ent.aiQuota,
+    ai_generations_remaining: ent.aiQuota === -1 ? -1 : Math.max(0, ent.aiQuota - ent.aiGenerationsUsed),
+    customer_quota: ent.customerQuota,
+    team_member_quota: ent.teamQuota,
+    current_period_start: ent.currentPeriodStart,
+    current_period_end: ent.currentPeriodEnd,
+    features: plan?.features || []
+  };
+}
+
+export async function getLegacyUserSubscriptionFallback(
+  userId: string,
+  env: any = {}
+): Promise<any> {
   const supabase = getServerSupabase(env);
-  if (!supabase || userId === "local-dev-user") {
-    const p = CENTRAL_PLANS.basic;
-    return {
-      plan_id: p.id,
-      plan_name: p.name,
-      status: "active",
-      price_inr: p.priceInr,
-      is_contact_us: p.isContactUs,
-      invoices_used: 0,
-      invoice_quota: p.invoiceQuota,
-      invoices_remaining: p.invoiceQuota,
-      ai_generations_used: 0,
-      ai_generation_quota: p.aiGenerationQuota,
-      ai_generations_remaining: p.aiGenerationQuota,
-      customer_quota: p.customerQuota,
-      team_member_quota: p.teamMemberQuota,
-      current_period_start: new Date().toISOString(),
-      current_period_end: new Date(Date.now() + 30 * 86400000).toISOString()
-    };
-  }
-
-  try {
-    const { data, error } = await supabase.rpc("get_user_subscription_info", {
-      p_user_id: userId
-    });
-
-    if (!error && data) {
-      return data;
-    }
-  } catch (e) {
-    console.warn("RPC get_user_subscription_info failed, falling back to direct query:", e);
-  }
 
   // Fallback direct query
   const { data: sub } = await supabase

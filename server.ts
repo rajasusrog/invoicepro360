@@ -16,14 +16,43 @@ import {
   getUserSubscription,
   getServerSupabase
 } from "./functions/_subscription";
+import * as adminVerify from "./functions/api/admin/verify";
+import * as adminOverview from "./functions/api/admin/overview";
+import * as adminUsers from "./functions/api/admin/users";
+import * as adminAlerts from "./functions/api/admin/alerts";
+import * as adminAiActivity from "./functions/api/admin/ai-activity";
+import * as adminAuditLogs from "./functions/api/admin/audit-logs";
+import * as adminConfig from "./functions/api/admin/config";
+import * as paymentConfig from "./functions/api/payment/config";
+import * as paymentCreateOrder from "./functions/api/payment/create-order";
+import * as paymentVerify from "./functions/api/payment/verify";
+import * as paymentHistory from "./functions/api/payment/history";
+import * as paymentWebhook from "./functions/api/payment/webhook";
+import * as adminManualActivate from "./functions/api/admin/manual-activate";
+import * as adminPayments from "./functions/api/admin/payments";
+import * as billingPlans from "./functions/api/billing/plans";
+import * as billingCreateCheckout from "./functions/api/billing/create-checkout";
+import * as billingVerifyPayment from "./functions/api/billing/verify-payment";
+import * as billingSubscription from "./functions/api/billing/subscription";
+import * as billingCancel from "./functions/api/billing/cancel";
+import * as billingWebhook from "./functions/api/billing/webhook";
+import * as invoiceSave from "./functions/api/invoice/save";
+import * as invoiceChat from "./functions/api/invoice/chat";
 
 dotenv.config();
 
 const app = express();
 const PORT = 3000;
 
-// Increase payload limit to handle base64 invoice uploads (images)
-app.use(express.json({ limit: "20mb" }));
+// Increase payload limit to handle base64 invoice uploads (images) and capture rawBody for webhook HMAC
+app.use(
+  express.json({
+    limit: "20mb",
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf.toString("utf-8");
+    }
+  })
+);
 app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 
 // Lazy initializer for Gemini client to prevent crash if key is missing on startup
@@ -381,152 +410,11 @@ Return a JSON array containing an object for each invoice with:
   }
 });
 
-// 6. AI Chat over Invoices endpoint (Supports multi-provider: Gemini default, OpenAI, Claude)
-app.post("/api/invoice/chat", async (req, res) => {
-  try {
-    const authResult = await authenticateRequest(req.headers, process.env);
-    if (!authResult.user) {
-      return res.status(401).json({ error: authResult.error || "Authentication required", code: "AUTH_REQUIRED" });
-    }
+// 6. AI Invoice Chat Endpoint (With Server-Enforced AI Quota)
+app.post("/api/invoice/chat", (req, res) => handleCloudflareEndpoint(invoiceChat.onRequestPost, req, res));
 
-    const { messages, invoices, provider, model } = req.body;
-    if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({ error: "messages array is required", code: "BAD_REQUEST" });
-    }
-
-    const result = await chatWithInvoices({
-      messages,
-      invoices,
-      provider,
-      model,
-      env: process.env
-    });
-
-    res.json(result);
-  } catch (error: any) {
-    console.error("Error in AI Invoice Chat:", error);
-    res.status(500).json({ error: error.message || "Chat failed to process", code: "SERVER_ERROR" });
-  }
-});
-
-// 7. Save Invoice with Server-Enforced Quota & User Isolation
-app.post("/api/invoice/save", async (req, res) => {
-  try {
-    const authResult = await authenticateRequest(req.headers, process.env);
-    if (!authResult.user) {
-      return res.status(401).json({ error: authResult.error || "Authentication required", code: "AUTH_REQUIRED" });
-    }
-    const userId = authResult.user.id;
-
-    const { invoice } = req.body || {};
-    if (!invoice || typeof invoice !== "object") {
-      return res.status(400).json({ error: "invoice object is required in request body", code: "BAD_REQUEST" });
-    }
-
-    if (!invoice.invoiceNumber || !invoice.supplierName || !invoice.customerName) {
-      return res.status(400).json({ error: "Missing required invoice fields (invoiceNumber, supplierName, customerName)", code: "BAD_REQUEST" });
-    }
-
-    // Concurrency-safe atomic invoice quota check & increment
-    const quotaResult = await checkAndIncrementInvoiceQuota(userId, process.env);
-    if (!quotaResult.allowed) {
-      return res.status(429).json({
-        error: quotaResult.message || "Monthly successful invoice quota reached. Please upgrade your plan.",
-        code: "INVOICE_QUOTA_EXCEEDED",
-        used: quotaResult.used,
-        limit: quotaResult.limit,
-        remaining: 0,
-        resetDate: quotaResult.resetDate,
-        planId: quotaResult.planId
-      });
-    }
-
-    // Persist to Supabase
-    const supabase = getServerSupabase(process.env);
-    if (!supabase || userId === "local-dev-user") {
-      return res.json({
-        success: true,
-        invoice,
-        _usage: {
-          used: quotaResult.used,
-          limit: quotaResult.limit,
-          remaining: quotaResult.remaining,
-          resetDate: quotaResult.resetDate,
-          planId: quotaResult.planId
-        }
-      });
-    }
-
-    const dbRow = {
-      id: invoice.id || `inv-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-      user_id: userId,
-      invoice_number: invoice.invoiceNumber,
-      supplier_name: invoice.supplierName,
-      supplier_gstin: invoice.supplierGstin || null,
-      supplier_address: invoice.supplierAddress || null,
-      customer_name: invoice.customerName,
-      customer_gstin: invoice.customerGstin || null,
-      customer_address: invoice.customerAddress || null,
-      date: invoice.date || new Date().toISOString().substring(0, 10),
-      due_date: invoice.dueDate || null,
-      items: invoice.items || [],
-      subtotal: Number(invoice.subtotal) || 0,
-      cgst: Number(invoice.cgst) || 0,
-      sgst: Number(invoice.sgst) || 0,
-      igst: Number(invoice.igst) || 0,
-      tax_amount: Number(invoice.taxAmount) || 0,
-      total_amount: Number(invoice.totalAmount) || 0,
-      status: invoice.status || "unpaid",
-      payment_status: invoice.paymentStatus || "due",
-      amount_paid: Number(invoice.amountPaid) || 0,
-      balance_due: Number(invoice.balanceDue) || Number(invoice.totalAmount) || 0,
-      payments: invoice.payments || [],
-      category: invoice.category || "Sales",
-      expense_category: invoice.expenseCategory || null,
-      tags: invoice.tags || [],
-      notes: invoice.notes || null,
-      ocr_source: invoice.ocrSource || null,
-      created_at: invoice.createdAt || new Date().toISOString()
-    };
-
-    const { data: savedRow, error: insertError } = await supabase
-      .from("invoices")
-      .insert(dbRow)
-      .select()
-      .single();
-
-    if (insertError) {
-      try {
-        await supabase
-          .from("subscriptions")
-          .update({ invoices_used: Math.max(0, (quotaResult.used || 1) - 1) })
-          .eq("user_id", userId);
-      } catch (refundErr) {
-        console.error("Failed to refund invoice counter:", refundErr);
-      }
-      return res.status(500).json({ error: `Failed to persist invoice: ${insertError.message}`, code: "DB_INSERT_ERROR" });
-    }
-
-    res.json({
-      success: true,
-      invoice: {
-        ...invoice,
-        id: savedRow.id,
-        createdAt: savedRow.created_at
-      },
-      _usage: {
-        used: quotaResult.used,
-        limit: quotaResult.limit,
-        remaining: quotaResult.remaining,
-        resetDate: quotaResult.resetDate,
-        planId: quotaResult.planId
-      }
-    });
-  } catch (error: any) {
-    console.error("Error saving invoice:", error);
-    res.status(500).json({ error: error.message || "Failed to save invoice", code: "SERVER_ERROR" });
-  }
-});
+// 7. Save Invoice (Single & Batch) with Server-Enforced Atomic Quota & User Isolation
+app.post("/api/invoice/save", (req, res) => handleCloudflareEndpoint(invoiceSave.onRequestPost, req, res));
 
 // 8. Get Subscription, Plan & Quota Details
 app.get("/api/subscription", async (req, res) => {
@@ -543,6 +431,76 @@ app.get("/api/subscription", async (req, res) => {
     res.status(500).json({ error: error.message || "Failed to fetch subscription", code: "SERVER_ERROR" });
   }
 });
+
+// Helper adapter to bridge Express requests to Cloudflare Pages Functions
+async function handleCloudflareEndpoint(fn: any, req: express.Request, res: express.Response) {
+  try {
+    const protocol = req.protocol || 'http';
+    const host = req.get('host') || `localhost:${PORT}`;
+    const fullUrl = `${protocol}://${host}${req.originalUrl || req.url}`;
+
+    const headers = new Headers();
+    for (const [key, val] of Object.entries(req.headers)) {
+      if (val !== undefined) {
+        if (Array.isArray(val)) {
+          val.forEach(v => headers.append(key, v));
+        } else {
+          headers.set(key, val);
+        }
+      }
+    }
+
+    const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
+    const rawBody = (req as any).rawBody;
+    const bodyStr = hasBody ? (typeof rawBody === 'string' ? rawBody : JSON.stringify(req.body)) : undefined;
+
+    const cfRequest = new Request(fullUrl, {
+      method: req.method,
+      headers,
+      body: bodyStr
+    });
+
+    const response: Response = await fn({ request: cfRequest, env: process.env });
+    res.status(response.status);
+    response.headers.forEach((val, name) => {
+      res.setHeader(name, val);
+    });
+    const text = await response.text();
+    res.send(text);
+  } catch (err: any) {
+    console.error("Cloudflare endpoint adapter error:", err);
+    res.status(500).json({ error: err.message || "Endpoint route error", code: "SERVER_ERROR" });
+  }
+}
+
+// 9. Super Admin Console Endpoints
+app.get("/api/admin/verify", (req, res) => handleCloudflareEndpoint(adminVerify.onRequestGet, req, res));
+app.get("/api/admin/overview", (req, res) => handleCloudflareEndpoint(adminOverview.onRequestGet, req, res));
+app.get("/api/admin/users", (req, res) => handleCloudflareEndpoint(adminUsers.onRequestGet, req, res));
+app.patch("/api/admin/users", (req, res) => handleCloudflareEndpoint(adminUsers.onRequestPatch, req, res));
+app.get("/api/admin/alerts", (req, res) => handleCloudflareEndpoint(adminAlerts.onRequestGet, req, res));
+app.patch("/api/admin/alerts", (req, res) => handleCloudflareEndpoint(adminAlerts.onRequestPatch, req, res));
+app.get("/api/admin/ai-activity", (req, res) => handleCloudflareEndpoint(adminAiActivity.onRequestGet, req, res));
+app.get("/api/admin/audit-logs", (req, res) => handleCloudflareEndpoint(adminAuditLogs.onRequestGet, req, res));
+app.get("/api/admin/config", (req, res) => handleCloudflareEndpoint(adminConfig.onRequestGet, req, res));
+app.post("/api/admin/config", (req, res) => handleCloudflareEndpoint(adminConfig.onRequestPost, req, res));
+
+// 10. Commercial Billing Endpoints (Monthly, Annual & Lifetime)
+app.get("/api/billing/plans", (req, res) => handleCloudflareEndpoint(billingPlans.onRequestGet, req, res));
+app.post("/api/billing/create-checkout", (req, res) => handleCloudflareEndpoint(billingCreateCheckout.onRequestPost, req, res));
+app.post("/api/billing/verify-payment", (req, res) => handleCloudflareEndpoint(billingVerifyPayment.onRequestPost, req, res));
+app.get("/api/billing/subscription", (req, res) => handleCloudflareEndpoint(billingSubscription.onRequestGet, req, res));
+app.post("/api/billing/cancel", (req, res) => handleCloudflareEndpoint(billingCancel.onRequestPost, req, res));
+app.post("/api/billing/webhook", (req, res) => handleCloudflareEndpoint(billingWebhook.onRequestPost, req, res));
+
+// 11. Legacy Payment & Admin Manual Activation Endpoints
+app.get("/api/payment/config", (req, res) => handleCloudflareEndpoint(paymentConfig.onRequestGet, req, res));
+app.post("/api/payment/create-order", (req, res) => handleCloudflareEndpoint(paymentCreateOrder.onRequestPost, req, res));
+app.post("/api/payment/verify", (req, res) => handleCloudflareEndpoint(paymentVerify.onRequestPost, req, res));
+app.get("/api/payment/history", (req, res) => handleCloudflareEndpoint(paymentHistory.onRequestGet, req, res));
+app.post("/api/payment/webhook", (req, res) => handleCloudflareEndpoint(paymentWebhook.onRequestPost, req, res));
+app.post("/api/admin/manual-activate", (req, res) => handleCloudflareEndpoint(adminManualActivate.onRequestPost, req, res));
+app.get("/api/admin/payments", (req, res) => handleCloudflareEndpoint(adminPayments.onRequestGet, req, res));
 
 // Configure Vite or production static files
 async function startServer() {

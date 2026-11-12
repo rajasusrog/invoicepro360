@@ -203,12 +203,21 @@ export interface SubscriptionPlan {
   features: string[];
 }
 
+export type BillingCycle = 'monthly' | 'annual' | 'lifetime';
+
 export interface UserSubscription {
   planId: SubscriptionTierId;
   planName: string;
-  status: 'active' | 'trialing' | 'past_due' | 'canceled';
+  status: 'active' | 'trialing' | 'past_due' | 'canceled' | 'cancelled' | 'expired' | 'pending';
   priceInr: number;
   isContactUs: boolean;
+  billingCycle?: BillingCycle;
+  billingModel?: 'free' | 'monthly' | 'annual' | 'lifetime';
+  lifetimeEntitlement?: boolean;
+  cancelAtPeriodEnd?: boolean;
+  paymentReference?: string;
+  autoRenew?: boolean;
+  expiresAt?: string;
   invoicesUsed: number;
   invoiceQuota: number;
   invoicesRemaining: number;
@@ -231,6 +240,45 @@ export interface QuotaCheckResult {
   limit?: number;
   remaining?: number;
   resetDate?: string;
+}
+
+export interface SubscriptionPaymentRecord {
+  id: string;
+  planId: SubscriptionTierId;
+  planName: string;
+  billingCycle: BillingCycle;
+  amountInr: number;
+  taxInr: number;
+  currency: string;
+  status: 'pending' | 'paid' | 'failed' | 'refunded';
+  gateway: string;
+  gatewayOrderId?: string;
+  gatewayPaymentId?: string;
+  manualAdminGranted?: boolean;
+  grantedBy?: string;
+  justification?: string;
+  createdAt: string;
+  paidAt?: string;
+}
+
+export interface PaymentGatewayConfig {
+  isConfigured: boolean;
+  keyId: string | null;
+  currency: string;
+  paymentGateway: string;
+}
+
+export interface CheckoutOrderSummary {
+  orderId: string;
+  amountPaise: number;
+  currency: string;
+  keyId: string;
+  planId: SubscriptionTierId;
+  billingCycle: BillingCycle;
+  baseAmountInr: number;
+  taxAmountInr: number;
+  totalAmountInr: number;
+  paymentRecordId?: string;
 }
 
 

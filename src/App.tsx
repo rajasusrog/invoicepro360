@@ -1,5 +1,12 @@
-import React, { useState, useEffect } from "react";
-import { Invoice, ChatMessage, CompanySettings } from "./types";
+import React, { useState, useEffect, useMemo } from "react";
+import {
+  Invoice,
+  ChatMessage,
+  CompanySettings,
+  UserSubscription,
+  SubscriptionTierId,
+  BillingCycle
+} from "./types";
 import DashboardOverview from "./components/DashboardOverview";
 import InvoiceList from "./components/InvoiceList";
 import InvoiceCreator from "./components/InvoiceCreator";
@@ -7,24 +14,32 @@ import InvoiceViewer from "./components/InvoiceViewer";
 import InvoiceChat from "./components/InvoiceChat";
 import CompanySettingsComponent from "./components/CompanySettings";
 import RecordPaymentModal from "./components/RecordPaymentModal";
-import { 
-  BarChart3, 
-  FileSpreadsheet, 
-  Sparkles, 
-  Bot, 
-  FileCheck2, 
-  Lock, 
-  LogOut, 
-  ShieldCheck, 
-  Cloud, 
-  Loader2, 
-  User, 
+import PricingPage from "./components/PricingPage";
+import CheckoutPage from "./components/CheckoutPage";
+import BillingDashboard from "./components/BillingDashboard";
+import QuotaExceededModal from "./components/QuotaExceededModal";
+import SuperAdminApp from "./components/admin/SuperAdminApp";
+import {
+  BarChart3,
+  FileSpreadsheet,
+  PlusCircle,
+  Bot,
+  Users,
+  LogOut,
+  ShieldCheck,
+  Loader2,
+  User,
   Settings,
   AlertCircle,
   CreditCard,
-  Crown
+  Tag,
+  Menu,
+  X,
+  Search,
+  FileText,
+  ArrowUpRight
 } from "lucide-react";
-import { 
+import {
   supabase,
   SupabaseUser,
   signInWithGoogle,
@@ -40,15 +55,14 @@ import {
   isSupabaseConfigured,
   fetchUserSubscription
 } from "./lib/supabase";
-import { UserSubscription } from "./types";
 import { formatQuotaLabel } from "./utils/subscriptionPlans";
-import PlansAndPricing from "./components/PlansAndPricing";
-import QuotaExceededModal from "./components/QuotaExceededModal";
 import { flagRecurringInvoicesAsDue } from "./utils/recurringUtils";
+import { SAMPLE_INVOICES } from "./utils/sampleData";
 
-// High-fidelity Google logo vector icon
+const SQUARE_BRAND_LOGO = "/assets/aistudio/ChatGPT_Image_Oct_29__2026__07_20_38_PM_11dd3e23.png";
+
 const GoogleIcon = () => (
-  <svg className="w-5 h-5 mr-2 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+  <svg className="w-5 h-5 mr-2.5 shrink-0" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
     <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" />
     <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
     <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" fill="#FBBC05" />
@@ -56,13 +70,36 @@ const GoogleIcon = () => (
   </svg>
 );
 
+export type WorkspaceTab =
+  | "dashboard"
+  | "ledger"
+  | "ai-creator"
+  | "customers"
+  | "copilot"
+  | "pricing"
+  | "checkout"
+  | "plans"
+  | "settings";
+
 export default function App() {
-  // Tabs: "dashboard" | "ledger" | "ai-creator" | "copilot" | "settings" | "plans"
-  const [activeTab, setActiveTab] = useState<"dashboard" | "ledger" | "ai-creator" | "copilot" | "settings" | "plans">("dashboard");
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("dashboard");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
-  
   const [recordingPaymentInvoice, setRecordingPaymentInvoice] = useState<Invoice | null>(null);
+
+  // Commercial Checkout Selection State
+  const [checkoutSelection, setCheckoutSelection] = useState<{
+    planCode: SubscriptionTierId;
+    billingCycle: BillingCycle;
+  }>({
+    planCode: "professional",
+    billingCycle: "monthly"
+  });
+
+  // Customer Directory Search & Filter State
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [customerRoleFilter, setCustomerRoleFilter] = useState<"all" | "Customer" | "Vendor">("all");
 
   // User Subscription & Quota State
   const [userSubscription, setUserSubscription] = useState<UserSubscription | null>(null);
@@ -74,19 +111,18 @@ export default function App() {
     resetDate?: string;
     planId?: string;
   } | null>(null);
-  
-  // Cross-component communication states
+
   const [ledgerSearchQuery, setLedgerSearchQuery] = useState("");
-  
+
   // Company Profile Settings State
   const [companySettings, setCompanySettings] = useState<CompanySettings>({
-    name: "Unikorn360 AI Solutions",
-    address: "Suite 101, Tech Park Alpha, Nagpur, Maharashtra, 440028",
-    gstin: "27AABCU1234A1Z8",
+    name: "UNIKORN360 Business Intelligence",
+    address: "VK Complex, P.J.N. Road, Vaniyambadi, Tamil Nadu 635751",
+    gstin: "33AABCU1234A1Z8",
     logoType: "url",
     logoIcon: "Sparkles",
     logoColor: "indigo",
-    logoUrl: "/logo.svg",
+    logoUrl: SQUARE_BRAND_LOGO,
     logoInitials: "U360"
   });
 
@@ -95,7 +131,7 @@ export default function App() {
     {
       id: "msg-welcome",
       sender: "assistant",
-      text: "👋 Hello! I am **InvoicePro 360 AI Assistant**.\n\nI have complete secure visibility over all your current invoices in this ledger session. Ask me anything!\n\nExamples:\n- *'Show invoices above ₹50,000'*\n- *'Find duplicate invoices'*\n- *'Who is our top vendor?'*\n- *'Show invoices from Delhi Retailers'*",
+      text: "Hello! I am the **InvoicePro 360 Assistant**.\n\nAsk me anything about your invoices, GST tax breakdowns, vendor balances, or monthly expenditure.\n\nExamples:\n- *'Show invoices above ₹50,000'*\n- *'Find duplicate invoices'*\n- *'Who is our top vendor?'*",
       createdAt: new Date().toISOString()
     }
   ]);
@@ -105,7 +141,6 @@ export default function App() {
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  // Custom Confirmation Dialog State
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
     title: string;
@@ -115,40 +150,97 @@ export default function App() {
   } | null>(null);
 
   const [dbError, setDbError] = useState<string | null>(null);
+  const [statusToast, setStatusToast] = useState<string | null>(null);
+  const [currentPath, setCurrentPath] = useState<string>(() =>
+    typeof window !== "undefined" ? window.location.pathname : "/"
+  );
+  const [isVerifiedAdmin, setIsVerifiedAdmin] = useState(false);
+
+  const showToast = (msg: string) => {
+    setStatusToast(msg);
+    setTimeout(() => {
+      setStatusToast((prev) => (prev === msg ? null : prev));
+    }, 3500);
+  };
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentPath(window.location.pathname);
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  // Verify administrator access on the server
+  useEffect(() => {
+    if (currentUser) {
+      getSession()
+        .then((session) => {
+          const token = session?.access_token || (currentUser.id === "local-dev-user" ? "local-dev-token" : null);
+          if (token) {
+            fetch("/api/admin/verify", {
+              headers: { Authorization: `Bearer ${token}` }
+            })
+              .then((res) => (res.ok ? res.json() : null))
+              .then((data) => {
+                setIsVerifiedAdmin(Boolean(data?.isAdmin));
+              })
+              .catch(() => setIsVerifiedAdmin(false));
+          } else {
+            setIsVerifiedAdmin(false);
+          }
+        })
+        .catch(() => setIsVerifiedAdmin(false));
+    } else {
+      setIsVerifiedAdmin(false);
+    }
+  }, [currentUser]);
 
   const refreshSubscription = async () => {
     try {
       const sub = await fetchUserSubscription();
-      setUserSubscription(sub);
+      if (sub) {
+        setUserSubscription(sub);
+      }
     } catch (e) {
       console.warn("Failed to refresh subscription:", e);
     }
   };
 
-  // Load user data from Supabase PostgreSQL (isolated by user_id)
   const loadUserData = async (user: SupabaseUser) => {
     setDbError(null);
     try {
-      // 1. Fetch Company Settings
       const profile = await fetchUserProfile(user.id);
       if (profile && profile.companySettings) {
         setCompanySettings(profile.companySettings);
       }
 
-      // 2. Fetch Invoices from Supabase
       const userInvoices = await fetchUserInvoices(user.id);
-      const flagged = flagRecurringInvoicesAsDue(userInvoices);
-      setInvoices(flagged.updatedInvoices);
+      if (userInvoices.length > 0) {
+        const flagged = flagRecurringInvoicesAsDue(userInvoices);
+        setInvoices(flagged.updatedInvoices);
+      } else if (!isSupabaseConfigured) {
+        try {
+          const cached = localStorage.getItem("unikorn_invoicepro_records");
+          if (cached) {
+            setInvoices(JSON.parse(cached));
+          } else {
+            setInvoices(SAMPLE_INVOICES);
+          }
+        } catch {
+          setInvoices(SAMPLE_INVOICES);
+        }
+      } else {
+        setInvoices([]);
+      }
 
-      // 3. Fetch User Subscription & Quota Limits
       await refreshSubscription();
     } catch (error: any) {
-      console.error("Error loading user data from Supabase:", error);
-      setDbError(error?.message || "Failed to load invoices from database.");
+      console.error("Error loading user data:", error);
+      setDbError("Unable to load your invoice records right now. Please try again.");
     }
   };
 
-  // Monitor Supabase Auth State and Sessions
   useEffect(() => {
     let isMounted = true;
 
@@ -163,12 +255,35 @@ export default function App() {
         if (session && session.user) {
           setCurrentUser(session.user);
           await loadUserData(session.user);
+          const intendedPlan = sessionStorage.getItem("intended_plan_checkout");
+          const intendedCycle = sessionStorage.getItem("intended_cycle_checkout") as BillingCycle | null;
+          if (intendedPlan) {
+            sessionStorage.removeItem("intended_plan_checkout");
+            sessionStorage.removeItem("intended_cycle_checkout");
+            setCheckoutSelection({
+              planCode: intendedPlan as SubscriptionTierId,
+              billingCycle: intendedCycle || "monthly"
+            });
+            setActiveTab("checkout");
+          }
         } else {
-          setCurrentUser(null);
-          setInvoices([]);
+          // Check if local preview session was active
+          const localPreview = sessionStorage.getItem("unikorn_preview_session");
+          if (!isSupabaseConfigured && localPreview === "active") {
+            const demoUser = {
+              id: "local-dev-user",
+              email: "raj.asusrog@gmail.com",
+              user_metadata: { full_name: "S. Rajkumar" }
+            } as unknown as SupabaseUser;
+            setCurrentUser(demoUser);
+            await loadUserData(demoUser);
+          } else {
+            setCurrentUser(null);
+            setInvoices([]);
+          }
         }
       } catch (err) {
-        console.error("Auth initialization error:", err);
+        console.error("Session check error:", err);
         if (isMounted) {
           setCurrentUser(null);
           setInvoices([]);
@@ -182,16 +297,29 @@ export default function App() {
 
     initializeAuth();
 
-    // Listen for real-time Auth state changes from Supabase
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!isMounted) return;
 
       if (event === "SIGNED_IN" || (event === "INITIAL_SESSION" && session?.user)) {
         if (session?.user) {
           setCurrentUser(session.user);
           await loadUserData(session.user);
+          const intendedPlan = sessionStorage.getItem("intended_plan_checkout");
+          const intendedCycle = sessionStorage.getItem("intended_cycle_checkout") as BillingCycle | null;
+          if (intendedPlan) {
+            sessionStorage.removeItem("intended_plan_checkout");
+            sessionStorage.removeItem("intended_cycle_checkout");
+            setCheckoutSelection({
+              planCode: intendedPlan as SubscriptionTierId,
+              billingCycle: intendedCycle || "monthly"
+            });
+            setActiveTab("checkout");
+          }
         }
       } else if (event === "SIGNED_OUT") {
+        sessionStorage.removeItem("unikorn_preview_session");
         setCurrentUser(null);
         setInvoices([]);
         setSelectedInvoice(null);
@@ -206,51 +334,87 @@ export default function App() {
     };
   }, []);
 
+  const persistLocalInvoicesIfNeeded = (list: Invoice[]) => {
+    if (!isSupabaseConfigured) {
+      try {
+        localStorage.setItem("unikorn_invoicepro_records", JSON.stringify(list));
+      } catch {
+        // ignore storage quota errors
+      }
+    }
+  };
+
   const handleSaveCompanySettings = async (updatedSettings: CompanySettings) => {
-    if (currentUser) {
+    if (currentUser && isSupabaseConfigured) {
       try {
         await saveUserProfile(currentUser, updatedSettings);
       } catch (err) {
-        console.error("Error saving company settings to Supabase:", err);
+        console.error("Error saving company settings:", err);
+        setDbError("Could not save company settings. Please try again.");
+        return;
       }
     }
     setCompanySettings(updatedSettings);
+    showToast("Saved company settings.");
   };
 
-  // Sign In with Google via Supabase OAuth
   const handleGoogleLogin = async () => {
     setAuthSubmitting(true);
     setAuthError(null);
+
+    if (!isSupabaseConfigured) {
+      // Activate local preview workspace when external auth variables are not set
+      sessionStorage.setItem("unikorn_preview_session", "active");
+      const demoUser = {
+        id: "local-dev-user",
+        email: "raj.asusrog@gmail.com",
+        user_metadata: { full_name: "S. Rajkumar" }
+      } as unknown as SupabaseUser;
+      setCurrentUser(demoUser);
+      await loadUserData(demoUser);
+      const intendedPlan = sessionStorage.getItem("intended_plan_checkout");
+      const intendedCycle = sessionStorage.getItem("intended_cycle_checkout") as BillingCycle | null;
+      if (intendedPlan) {
+        sessionStorage.removeItem("intended_plan_checkout");
+        sessionStorage.removeItem("intended_cycle_checkout");
+        setCheckoutSelection({
+          planCode: intendedPlan as SubscriptionTierId,
+          billingCycle: intendedCycle || "monthly"
+        });
+        setActiveTab("checkout");
+      }
+      setAuthSubmitting(false);
+      return;
+    }
+
     try {
       const { error } = await signInWithGoogle();
       if (error) {
-        console.error("Google sign in failed:", error);
-        setAuthError(error.message || "Unable to sign in with Google. Please try again.");
+        setAuthError("Unable to sign in with Google right now. Please try again.");
         setAuthSubmitting(false);
       }
-    } catch (err: any) {
-      console.error("Google sign in exception:", err);
-      setAuthError(err.message || "Unable to sign in with Google. Please check your network and configuration.");
+    } catch {
+      setAuthError("Unable to connect to Google sign-in. Please check your connection and try again.");
       setAuthSubmitting(false);
     }
   };
 
-  // Log out of Supabase session
   const handleLogout = () => {
     setConfirmDialog({
       isOpen: true,
       title: "Sign Out",
-      message: "Are you sure you want to sign out of your secure enterprise ledger session?",
+      message: "Are you sure you want to sign out of InvoicePro 360?",
       confirmText: "Sign Out",
       onConfirm: async () => {
         setAuthLoading(true);
         try {
+          sessionStorage.removeItem("unikorn_preview_session");
           await signOut();
           setCurrentUser(null);
           setInvoices([]);
           setSelectedInvoice(null);
         } catch (err) {
-          console.error("Logout error:", err);
+          console.error("Sign out error:", err);
         } finally {
           setAuthLoading(false);
           setConfirmDialog(null);
@@ -259,16 +423,17 @@ export default function App() {
     });
   };
 
-  // Add a freshly generated invoice
   const handleInvoiceCreated = async (newInvoice: Invoice) => {
     if (!currentUser) return;
 
     try {
       const created = await createInvoiceInDb(newInvoice, currentUser.id);
-      const updated = [created, ...invoices.filter(i => i.id !== created.id)];
+      const updated = [created, ...invoices.filter((i) => i.id !== created.id)];
       setInvoices(updated);
+      persistLocalInvoicesIfNeeded(updated);
       setSelectedInvoice(created);
       setActiveTab("ledger");
+      showToast("Saved invoice.");
       refreshSubscription();
     } catch (err: any) {
       if (err.code === "INVOICE_QUOTA_EXCEEDED") {
@@ -283,23 +448,26 @@ export default function App() {
         refreshSubscription();
         return;
       }
-      console.error("Error creating invoice in Supabase:", err);
-      setDbError(err?.message || "Failed to save invoice to database. Please check your Supabase connection.");
+      setDbError(err?.message || "Could not save the invoice. Your input has been preserved.");
     }
   };
 
-  // Add multiple freshly processed batch invoices
   const handleBatchInvoicesCreated = async (newInvoices: Invoice[]) => {
     if (!currentUser || newInvoices.length === 0) return;
 
     try {
       const savedInvoices = await batchCreateInvoicesInDb(newInvoices, currentUser.id);
-      const updated = [...savedInvoices, ...invoices.filter(i => !savedInvoices.some(s => s.id === i.id))];
+      const updated = [
+        ...savedInvoices,
+        ...invoices.filter((i) => !savedInvoices.some((s) => s.id === i.id))
+      ];
       setInvoices(updated);
+      persistLocalInvoicesIfNeeded(updated);
       if (savedInvoices.length > 0) {
         setSelectedInvoice(savedInvoices[0]);
       }
       setActiveTab("ledger");
+      showToast(`Uploaded ${savedInvoices.length} invoice(s).`);
       refreshSubscription();
     } catch (err: any) {
       if (err.code === "INVOICE_QUOTA_EXCEEDED") {
@@ -314,64 +482,63 @@ export default function App() {
         refreshSubscription();
         return;
       }
-      console.error("Error batch creating invoices in Supabase:", err);
-      setDbError(err?.message || "Failed to save batch invoices to database. Please check your Supabase connection.");
+      setDbError(err?.message || "Could not import batch invoices. Please verify your quota and try again.");
     }
   };
 
-  // Update an existing invoice (e.g. after editing, math correction, or payment)
   const handleUpdateInvoice = async (updatedInvoice: Invoice) => {
     if (!currentUser) return;
 
     try {
       const saved = await updateInvoiceInDb(updatedInvoice, currentUser.id);
-      const updated = invoices.map(inv => inv.id === saved.id ? saved : inv);
+      const updated = invoices.map((inv) => (inv.id === saved.id ? saved : inv));
       setInvoices(updated);
+      persistLocalInvoicesIfNeeded(updated);
       setSelectedInvoice(saved);
+      showToast("Saved changes.");
     } catch (err: any) {
-      console.error("Error updating invoice in Supabase:", err);
-      setDbError(err?.message || "Failed to update invoice in database.");
+      setDbError(err?.message || "Could not save changes to this invoice.");
     }
   };
 
-  // Batch update multiple invoices (e.g. from automated tagging engine)
   const handleBatchInvoicesUpdated = async (updatedInvoices: Invoice[]) => {
     if (!currentUser || updatedInvoices.length === 0) return;
 
     try {
-      const updatePromises = updatedInvoices.map(inv => updateInvoiceInDb(inv, currentUser.id));
+      const updatePromises = updatedInvoices.map((inv) => updateInvoiceInDb(inv, currentUser.id));
       const results = await Promise.all(updatePromises);
-      const resultsMap = new Map(results.map(r => [r.id, r]));
-      const updated = invoices.map(inv => resultsMap.get(inv.id) || inv);
+      const resultsMap = new Map(results.map((r) => [r.id, r]));
+      const updated = invoices.map((inv) => resultsMap.get(inv.id) || inv);
       setInvoices(updated);
+      persistLocalInvoicesIfNeeded(updated);
       if (selectedInvoice && resultsMap.has(selectedInvoice.id)) {
         setSelectedInvoice(resultsMap.get(selectedInvoice.id)!);
       }
+      showToast("Saved batch updates.");
     } catch (err: any) {
-      console.error("Error batch updating invoices in Supabase:", err);
-      setDbError(err?.message || "Failed to update invoices in database.");
+      setDbError(err?.message || "Could not update selected invoices.");
     }
   };
 
-  // Delete invoice
   const handleDeleteInvoice = (id: string) => {
     setConfirmDialog({
       isOpen: true,
       title: "Delete Invoice Record",
-      message: "Are you sure you want to delete this invoice record from your ledger? This action cannot be undone.",
-      confirmText: "Delete Permanently",
+      message: "Are you sure you want to permanently delete this invoice record?",
+      confirmText: "Delete Invoice",
       onConfirm: async () => {
         if (currentUser) {
           try {
             await deleteInvoiceFromDb(id, currentUser.id);
-            const updated = invoices.filter(inv => inv.id !== id);
+            const updated = invoices.filter((inv) => inv.id !== id);
             setInvoices(updated);
+            persistLocalInvoicesIfNeeded(updated);
             if (selectedInvoice?.id === id) {
               setSelectedInvoice(null);
             }
+            showToast("Deleted invoice record.");
           } catch (err: any) {
-            console.error("Error deleting invoice from Supabase:", err);
-            setDbError(err?.message || "Failed to delete invoice from database.");
+            setDbError(err?.message || "Could not delete invoice record.");
           }
         }
         setConfirmDialog(null);
@@ -379,369 +546,648 @@ export default function App() {
     });
   };
 
-  // Triggered when the AI chatbot suggests a filter or highlight
   const handleApplyChatFilter = (query: string) => {
     setLedgerSearchQuery(query);
     setActiveTab("ledger");
   };
 
+  const handleSelectPlanForCheckout = (planCode: SubscriptionTierId, billingCycle: BillingCycle) => {
+    if (!currentUser) {
+      sessionStorage.setItem("intended_plan_checkout", planCode);
+      sessionStorage.setItem("intended_cycle_checkout", billingCycle);
+      window.history.pushState({}, "", "/");
+      setCurrentPath("/");
+      handleGoogleLogin();
+      return;
+    }
+    setCheckoutSelection({ planCode, billingCycle });
+    if (currentPath !== "/") {
+      window.history.pushState({}, "", "/");
+      setCurrentPath("/");
+    }
+    setActiveTab("checkout");
+  };
+
+  // Aggregated Customer & Vendor Directory from invoices
+  const customerDirectory = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        name: string;
+        gstin: string;
+        address: string;
+        role: "Customer" | "Vendor";
+        invoiceCount: number;
+        totalBilled: number;
+        balanceDue: number;
+        lastInvoiceDate: string;
+      }
+    >();
+
+    for (const inv of invoices) {
+      const isSales = inv.category === "Sales" || !inv.category;
+      const partyName = isSales ? inv.customerName : inv.supplierName;
+      const partyGstin = (isSales ? inv.customerGstin : inv.supplierGstin) || "Unregistered";
+      const partyAddress = (isSales ? inv.customerAddress : inv.supplierAddress) || "—";
+      const role: "Customer" | "Vendor" = isSales ? "Customer" : "Vendor";
+      const key = `${role}:${partyName.toLowerCase().trim()}`;
+
+      const existing = map.get(key);
+      if (existing) {
+        existing.invoiceCount += 1;
+        existing.totalBilled += Number(inv.totalAmount) || 0;
+        existing.balanceDue += Number(inv.balanceDue ?? (inv.status === "paid" ? 0 : inv.totalAmount)) || 0;
+        if (inv.date > existing.lastInvoiceDate) {
+          existing.lastInvoiceDate = inv.date;
+        }
+      } else {
+        map.set(key, {
+          name: partyName,
+          gstin: partyGstin,
+          address: partyAddress,
+          role,
+          invoiceCount: 1,
+          totalBilled: Number(inv.totalAmount) || 0,
+          balanceDue: Number(inv.balanceDue ?? (inv.status === "paid" ? 0 : inv.totalAmount)) || 0,
+          lastInvoiceDate: inv.date
+        });
+      }
+    }
+
+    return Array.from(map.values()).filter((item) => {
+      if (customerRoleFilter !== "all" && item.role !== customerRoleFilter) return false;
+      if (!customerSearch.trim()) return true;
+      const q = customerSearch.toLowerCase();
+      return (
+        item.name.toLowerCase().includes(q) ||
+        item.gstin.toLowerCase().includes(q) ||
+        item.address.toLowerCase().includes(q)
+      );
+    });
+  }, [invoices, customerSearch, customerRoleFilter]);
+
+  // Public /pricing route
+  if (currentPath === "/pricing" || currentPath.startsWith("/pricing")) {
+    return (
+      <div className="min-h-screen bg-[#F6F5F1] text-[#263449]">
+        <header className="bg-[#0B1426] text-white border-b border-[#C49A36]/30 px-6 py-3.5">
+          <div className="max-w-7xl mx-auto flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <img
+                src={SQUARE_BRAND_LOGO}
+                alt="UNIKORN360"
+                className="w-9 h-9 rounded-lg object-contain bg-white p-0.5"
+              />
+              <span className="text-lg font-bold tracking-tight text-white">
+                InvoicePro 360
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                window.history.pushState({}, "", "/");
+                setCurrentPath("/");
+              }}
+              className="px-4 py-2 rounded-xl bg-[#C49A36] text-[#0B1426] text-sm font-bold hover:opacity-95 transition-opacity cursor-pointer"
+            >
+              {currentUser ? "Return to Workspace" : "Sign In"}
+            </button>
+          </div>
+        </header>
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <PricingPage
+            currentPlanCode={userSubscription?.planId || "basic"}
+            currentBillingModel={userSubscription?.billingModel || "free"}
+            isAuthenticated={Boolean(currentUser)}
+            onSelectPlanForCheckout={handleSelectPlanForCheckout}
+            onBackToApp={() => {
+              window.history.pushState({}, "", "/");
+              setCurrentPath("/");
+            }}
+          />
+        </main>
+      </div>
+    );
+  }
+
+  // Dedicated Super Admin Route (/super-admin)
+  if (currentPath.startsWith("/super-admin")) {
+    return (
+      <SuperAdminApp
+        onReturnToUserApp={() => {
+          window.history.pushState({}, "", "/");
+          setCurrentPath("/");
+        }}
+        onSignOut={handleLogout}
+      />
+    );
+  }
+
+  // Standardized UNIKORN360 Loading Screen
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-[#0A0A0B] text-slate-300 flex flex-col items-center justify-center space-y-4" id="app-auth-loading">
-        <Loader2 className="w-10 h-10 animate-spin text-indigo-500" />
-        <p className="text-sm text-slate-400 font-bold tracking-wide">Initializing secure enterprise ledger workspace...</p>
+      <div
+        className="min-h-screen bg-[#F6F5F1] text-[#263449] flex flex-col items-center justify-center p-6"
+        id="app-auth-loading"
+      >
+        <div className="bg-white border border-[#E4DFD5] rounded-xl p-8 max-w-sm w-full text-center space-y-4 shadow-sm">
+          <img
+            src={SQUARE_BRAND_LOGO}
+            alt="UNIKORN360 Business Intelligence"
+            className="w-16 h-16 mx-auto object-contain rounded-lg"
+          />
+          <Loader2 className="w-6 h-6 animate-spin text-[#0B1426] mx-auto" />
+          <p className="text-sm font-medium text-[#526176]">
+            Loading your InvoicePro 360 workspace...
+          </p>
+        </div>
       </div>
     );
   }
 
-  // Unauthenticated: Show strict Google OAuth login page (zero bypass)
+  // Standardized UNIKORN360 Sign-In Screen (Warm White #F6F5F1 background, centred White #FFFFFF card)
   if (!currentUser) {
     return (
-      <div className="min-h-screen bg-[#0A0A0B] text-slate-300 flex flex-col justify-between p-6 sm:p-12 relative overflow-hidden" id="app-login-screen">
-        {/* Decorative ambient gradient blobs */}
-        <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-indigo-500/10 rounded-full blur-[120px]" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-indigo-600/5 rounded-full blur-[120px]" />
-
-        <div className="max-w-4xl mx-auto w-full flex-1 flex flex-col justify-center py-12 space-y-10 z-10">
-          {/* Logo Brand Header */}
-          <div className="flex flex-col items-center text-center space-y-3">
-            <div className="bg-indigo-600 text-white p-3.5 rounded-2xl flex items-center justify-center font-bold shadow-lg shadow-indigo-600/20 ring-1 ring-white/10">
-              <FileCheck2 className="w-8 h-8" />
+      <div
+        className="min-h-screen bg-[#F6F5F1] text-[#263449] flex flex-col justify-between p-6"
+        id="app-login-screen"
+      >
+        <div className="flex-1 flex items-center justify-center">
+          <div className="bg-white border border-[#E4DFD5] rounded-xl p-8 sm:p-10 max-w-md w-full shadow-sm text-center space-y-6">
+            {/* Supplied Square UNIKORN360 Logo */}
+            <div className="flex justify-center">
+              <img
+                src={SQUARE_BRAND_LOGO}
+                alt="UNIKORN360 Business Intelligence"
+                className="w-28 h-28 object-contain"
+              />
             </div>
-            <div className="space-y-1.5">
-              <h1 className="font-display font-black text-white text-3xl sm:text-4xl tracking-tight flex items-center justify-center space-x-2">
-                <span>InvoicePro 360</span>
-                <span className="text-xs bg-indigo-500/10 text-indigo-400 px-3 py-1 rounded-full font-bold border border-indigo-500/20">AI Workspace v1</span>
+
+            {/* Product Name & One-Sentence Description */}
+            <div className="space-y-2">
+              <h1 className="text-[28px] font-bold text-[#0B1426] tracking-tight">
+                InvoicePro 360
               </h1>
-              <p className="text-sm text-slate-400 max-w-lg font-medium leading-relaxed">
-                The secure AI Hub to create, extract, validate, audit, and converse with business invoices, powered by <span className="text-indigo-400 font-semibold">Unikorn360 AI Solutions</span>.
+              <p className="text-[15px] text-[#526176] leading-relaxed">
+                Create, scan, validate, and manage GST-compliant business invoices with automated tax intelligence.
               </p>
             </div>
-          </div>
 
-          {/* Main Visual Box / Features Bento */}
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-6 items-stretch">
-            {/* Left Column: Feature Highlights */}
-            <div className="md:col-span-3 bg-[#111113] border border-white/5 rounded-2xl p-6 sm:p-8 flex flex-col justify-between space-y-6">
-              <div className="space-y-4">
-                <span className="text-[10px] uppercase font-black text-indigo-400 tracking-wider bg-indigo-500/10 px-2.5 py-1 rounded-md border border-indigo-500/20 inline-block">
-                  Enterprise Capabilities
-                </span>
-                <h3 className="font-display font-bold text-white text-lg sm:text-xl">
-                  Automate and secure your bookkeeping workflow
-                </h3>
+            {authError && (
+              <div
+                className="bg-red-50 border border-red-300 text-red-900 text-sm p-3.5 rounded-xl flex items-start gap-2.5 text-left"
+                id="auth-error-banner"
+              >
+                <AlertCircle className="w-4 h-4 text-red-700 shrink-0 mt-0.5" />
+                <span>{authError}</span>
               </div>
+            )}
 
-              <div className="space-y-4 text-xs">
-                <div className="flex items-start space-x-3.5">
-                  <div className="bg-indigo-500/10 text-indigo-400 p-1.5 rounded-lg shrink-0">
-                    <Sparkles className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-white mb-0.5">Instant AI Creator</h4>
-                    <p className="text-slate-400 leading-relaxed">Draft professional tax invoices and extract detailed item lists automatically via Gemini AI.</p>
-                  </div>
-                </div>
+            <div className="space-y-3 pt-1">
+              <button
+                type="button"
+                onClick={handleGoogleLogin}
+                disabled={authSubmitting}
+                className="w-full bg-[#0B1426] hover:bg-[#162442] disabled:opacity-60 text-white font-semibold py-3 px-4 rounded-xl flex items-center justify-center text-[15px] transition-colors cursor-pointer min-h-[44px]"
+                id="login-google-btn"
+              >
+                {authSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin text-[#C49A36]" />
+                    <span>Signing in...</span>
+                  </>
+                ) : (
+                  <>
+                    <GoogleIcon />
+                    <span>Sign in with Google</span>
+                  </>
+                )}
+              </button>
 
-                <div className="flex items-start space-x-3.5">
-                  <div className="bg-indigo-500/10 text-indigo-400 p-1.5 rounded-lg shrink-0">
-                    <ShieldCheck className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-white mb-0.5">Automated Compliance Auditor</h4>
-                    <p className="text-slate-400 leading-relaxed">Check GSTIN formats, HSN compliance, and state-wise SGST/CGST/IGST tax breakdowns instantly.</p>
-                  </div>
-                </div>
-
-                <div className="flex items-start space-x-3.5">
-                  <div className="bg-indigo-500/10 text-indigo-400 p-1.5 rounded-lg shrink-0">
-                    <Bot className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-white mb-0.5">AI Ledger Copilot</h4>
-                    <p className="text-slate-400 leading-relaxed">Query duplicates, analyze monthly spending, and filter complex vendor states via plain English dialogue.</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="pt-2 border-t border-white/5 flex items-center space-x-2 text-[10px] text-slate-500 font-medium">
-                <Lock className="w-3.5 h-3.5" />
-                <span>Row Level Security (RLS) PostgreSQL Storage Isolation</span>
-              </div>
-            </div>
-
-            {/* Right Column: Google Sign In Gateway */}
-            <div className="md:col-span-2 bg-[#111113] border border-white/5 rounded-2xl p-6 sm:p-8 flex flex-col justify-center text-center space-y-6">
-              <div className="space-y-1.5">
-                <h3 className="font-display font-bold text-white text-base">Sign in to continue</h3>
-                <p className="text-xs text-slate-400">Sign in with your Google account to access your secure ledger workspace.</p>
-              </div>
-
-              {authError && (
-                <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs p-3 rounded-xl font-medium leading-relaxed flex items-start space-x-2 text-left" id="auth-error-banner">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>{authError}</span>
-                </div>
-              )}
-
-              {!isSupabaseConfigured && (
-                <div className="bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs p-3 rounded-xl font-medium leading-relaxed text-left space-y-1.5">
-                  <div className="flex items-center space-x-1.5 font-bold text-amber-400">
-                    <AlertCircle className="w-4 h-4 shrink-0" />
-                    <span>Supabase Configuration Required</span>
-                  </div>
-                  <p className="text-[11px] text-amber-200/80">
-                    Please set <code className="font-mono bg-amber-950/60 px-1 py-0.5 rounded text-[10px]">VITE_SUPABASE_URL</code> and <code className="font-mono bg-amber-950/60 px-1 py-0.5 rounded text-[10px]">VITE_SUPABASE_ANON_KEY</code> in your environment or <code className="font-mono bg-amber-950/60 px-1 py-0.5 rounded text-[10px]">.env</code> file. Refer to <code className="font-mono text-amber-300">SUPABASE_SETUP.md</code> for setup instructions.
-                  </p>
-                </div>
-              )}
-
-              <div className="space-y-3">
-                {/* Official Google Sign-In Button */}
-                <button
-                  onClick={handleGoogleLogin}
-                  disabled={authSubmitting}
-                  className="w-full bg-white hover:bg-slate-100 disabled:opacity-75 disabled:cursor-not-allowed text-slate-900 font-bold py-3.5 px-4 rounded-xl flex items-center justify-center shadow-lg transition-all cursor-pointer text-xs transform hover:scale-[1.01] active:scale-[0.99]"
-                  id="login-google-btn"
-                >
-                  {authSubmitting ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin text-indigo-600" />
-                      <span>Signing in...</span>
-                    </>
-                  ) : (
-                    <>
-                      <GoogleIcon />
-                      <span>Continue with Google</span>
-                    </>
-                  )}
-                </button>
-
-                <p className="text-[10px] text-slate-500 font-medium">
-                  Secure authentication powered by Google OAuth & Supabase Auth
-                </p>
-              </div>
-
-              <div className="pt-2 border-t border-white/5 text-[10px] text-slate-500 leading-relaxed">
-                By continuing, your data is securely isolated using Supabase PostgreSQL Row Level Security.
-              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  window.history.pushState({}, "", "/pricing");
+                  setCurrentPath("/pricing");
+                }}
+                className="w-full bg-white hover:bg-[#F6F5F1] text-[#263449] font-semibold py-2.5 px-4 rounded-xl border border-[#E4DFD5] text-sm transition-colors cursor-pointer min-h-[42px]"
+                id="view-public-pricing-btn"
+              >
+                View Plans & Pricing
+              </button>
             </div>
           </div>
         </div>
 
-        {/* Footer info */}
-        <div className="text-center text-[11px] text-slate-600 font-medium">
-          InvoicePro 360 • A Product of <span className="text-slate-500 font-bold">Unikorn360 AI Solutions</span> • Powered by Gemini & Supabase PostgreSQL
-        </div>
+        <footer className="text-center text-xs text-[#526176] py-4">
+          UNIKORN360 Business Intelligence · InvoicePro 360
+        </footer>
       </div>
     );
   }
 
-  const userAvatar = currentUser.user_metadata?.avatar_url || currentUser.user_metadata?.picture;
-  const userFullName = currentUser.user_metadata?.full_name || currentUser.user_metadata?.name || currentUser.email?.split("@")[0] || "User";
+  const userAvatar =
+    currentUser.user_metadata?.avatar_url || currentUser.user_metadata?.picture;
+  const userFullName =
+    currentUser.user_metadata?.full_name ||
+    currentUser.user_metadata?.name ||
+    currentUser.email?.split("@")[0] ||
+    "Account";
+
+  const navItems: {
+    id: WorkspaceTab;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+  }[] = [
+    { id: "dashboard", label: "Dashboard", icon: BarChart3 },
+    { id: "ledger", label: "Invoice List", icon: FileSpreadsheet },
+    { id: "ai-creator", label: "Invoice Editor", icon: PlusCircle },
+    { id: "customers", label: "Customer List", icon: Users },
+    { id: "copilot", label: "AI Assistant", icon: Bot },
+    { id: "pricing", label: "Plans & Pricing", icon: Tag },
+    { id: "plans", label: "Billing & Subscription", icon: CreditCard },
+    { id: "settings", label: "Company Settings", icon: Settings }
+  ];
+
+  const pageMeta: Record<WorkspaceTab, { title: string; subtitle: string }> = {
+    dashboard: {
+      title: "Executive Overview",
+      subtitle: "Real-time GST billing summary, collection status, and monthly expenditure."
+    },
+    ledger: {
+      title: "Invoices Ledger",
+      subtitle: "Search, filter, validate, and export your sales and purchase invoices."
+    },
+    "ai-creator": {
+      title: "Create & Scan Invoice",
+      subtitle: "Draft a GST-compliant invoice manually, from plain text, or by scanning a document."
+    },
+    customers: {
+      title: "Customer & Vendor List",
+      subtitle: "Directory of active clients and suppliers with GSTIN and balance tracking."
+    },
+    copilot: {
+      title: "AI Ledger Assistant",
+      subtitle: "Query invoice totals, vendor histories, and tax summaries in plain language."
+    },
+    pricing: {
+      title: "Plans & Pricing",
+      subtitle: "Compare Monthly, Annual, and Lifetime commercial tiers."
+    },
+    checkout: {
+      title: "Checkout",
+      subtitle: "Verify your plan selection and complete secure payment."
+    },
+    plans: {
+      title: "Billing & Subscription",
+      subtitle: "Manage your active plan, monthly resetting quotas, and payment receipts."
+    },
+    settings: {
+      title: "Company Settings",
+      subtitle: "Configure your business name, GSTIN, address, and invoice branding."
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-[#0A0A0B] text-slate-300 flex flex-col justify-between" id="app-wrapper">
-      <div>
-        {/* Elite Navigation Header */}
-        <header className="bg-[#111113] border-b border-white/5 sticky top-0 z-40" id="app-header">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-            <div className="flex items-center space-x-2.5">
-              <div className="bg-indigo-600 text-white p-2 rounded-xl flex items-center justify-center font-bold">
-                <FileCheck2 className="w-5.5 h-5.5" />
+    <div className="min-h-screen bg-[#F6F5F1] text-[#263449] flex" id="app-wrapper">
+      {/* Desktop Navy Left Sidebar (#0B1426) */}
+      <aside
+        className="unikorn-sidebar hidden lg:flex lg:flex-col lg:w-64 bg-[#0B1426] text-white shrink-0 border-r border-[#0B1426] select-none sticky top-0 h-screen"
+        id="app-sidebar"
+      >
+        {/* Compact Brand Mark + Readable Product Name */}
+        <div className="h-16 px-5 flex items-center gap-3 border-b border-white/10">
+          <img
+            src={SQUARE_BRAND_LOGO}
+            alt="UNIKORN360"
+            className="w-9 h-9 rounded-lg object-contain bg-white p-0.5 shrink-0"
+          />
+          <div className="min-w-0">
+            <div className="font-bold text-base text-white tracking-tight truncate">
+              InvoicePro 360
+            </div>
+            <div className="text-[11px] text-[#C49A36] font-medium truncate">
+              UNIKORN360 BI
+            </div>
+          </div>
+        </div>
+
+        {/* Primary Action Button in Sidebar */}
+        <div className="p-4 border-b border-white/10">
+          <button
+            type="button"
+            onClick={() => setActiveTab("ai-creator")}
+            className="w-full py-2.5 px-4 rounded-xl bg-[#C49A36] hover:bg-[#d1a740] text-[#0B1426] font-bold text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer min-h-[42px]"
+            id="sidebar-create-invoice-btn"
+          >
+            <PlusCircle className="w-4 h-4" />
+            <span>Create Invoice</span>
+          </button>
+        </div>
+
+        {/* Navigation Links with Gold Active Indicator (#C49A36) */}
+        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto" id="tab-nav-wrapper">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const isActive =
+              activeTab === item.id ||
+              (item.id === "pricing" && activeTab === "checkout");
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveTab(item.id)}
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-colors cursor-pointer min-h-[40px] ${
+                  isActive
+                    ? "bg-white/10 text-white font-semibold border-l-4 border-[#C49A36]"
+                    : "text-slate-300 hover:bg-white/5 hover:text-white"
+                }`}
+                id={`tab-${item.id}`}
+              >
+                <Icon className={`w-4 h-4 shrink-0 ${isActive ? "text-[#C49A36]" : "text-slate-400"}`} />
+                <span className="truncate">{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Bottom Quota Summary Widget */}
+        <div className="p-4 border-t border-white/10 bg-black/20">
+          <div
+            onClick={() => setActiveTab("plans")}
+            className="p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors cursor-pointer space-y-2"
+            id="tier-limits-widget"
+            title="Manage subscription & quotas"
+          >
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-[#C49A36] uppercase tracking-wider">
+                {userSubscription?.planName || "Basic"} Plan
+              </span>
+              <span className="text-[11px] text-white/80 underline">Upgrade</span>
+            </div>
+            <div className="text-xs text-slate-300 space-y-1 tabular-nums">
+              <div className="flex justify-between">
+                <span>Invoices</span>
+                <span className="font-semibold text-white">
+                  {userSubscription?.invoicesUsed ?? invoices.length} / {formatQuotaLabel(userSubscription?.invoiceQuota ?? 10)}
+                </span>
               </div>
-              <div>
-                <h1 className="font-display font-black text-white text-lg tracking-tight flex items-center space-x-1.5">
-                  <span>InvoicePro 360</span>
-                  <span className="text-xs bg-white/5 text-indigo-400 px-2 py-0.5 rounded-full font-bold border border-white/5">AI Workspace v1</span>
-                </h1>
-                <p className="text-[10px] text-slate-400 font-medium flex items-center space-x-1.5">
-                  <span className="text-indigo-400 font-bold">Unikorn360 AI Solutions</span>
-                  <span className="text-slate-600">•</span>
-                  <span>Create • Scan • Extract • Validate • Automate</span>
-                </p>
+              <div className="flex justify-between">
+                <span>AI Credits</span>
+                <span className="font-semibold text-white">
+                  {userSubscription?.aiGenerationsUsed ?? 0} / {formatQuotaLabel(userSubscription?.aiGenerationQuota ?? 5)}
+                </span>
               </div>
             </div>
+          </div>
+        </div>
+      </aside>
 
-            {/* Authenticated User Header Controls */}
-            <div className="flex items-center space-x-3" id="auth-header-controls">
-              <div className="flex items-center space-x-3">
-                <div className="hidden md:flex flex-col items-end text-right">
-                  <span className="text-xs font-bold text-white block leading-none">{userFullName}</span>
-                  <span className="text-[10px] text-indigo-400 font-semibold flex items-center space-x-1 mt-1">
-                    <Cloud className="w-3 h-3" />
-                    <span>Supabase Cloud Sync Active</span>
-                  </span>
-                </div>
-                
-                {userAvatar ? (
-                  <img 
-                    src={userAvatar} 
-                    alt="Avatar" 
-                    className="w-8 h-8 rounded-full border border-indigo-500/30 object-cover shadow-sm" 
-                    referrerPolicy="no-referrer"
-                  />
-                ) : (
-                  <div className="w-8 h-8 rounded-full bg-indigo-500/10 text-indigo-400 flex items-center justify-center border border-indigo-500/30 font-bold text-xs shadow-sm">
-                    <User className="w-4 h-4" />
-                  </div>
-                )}
-
-                <button
-                  onClick={handleLogout}
-                  className="p-2 hover:bg-white/5 text-slate-400 hover:text-rose-400 rounded-xl transition-colors cursor-pointer"
-                  title="Sign Out"
-                  id="sign-out-button"
-                >
-                  <LogOut className="w-4.5 h-4.5" />
-                </button>
+      {/* Mobile Sidebar Slide-Over Drawer */}
+      {mobileMenuOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden flex">
+          <div
+            className="fixed inset-0 bg-black/50"
+            onClick={() => setMobileMenuOpen(false)}
+          />
+          <aside className="relative w-72 max-w-[85vw] bg-[#0B1426] text-white h-full flex flex-col z-10">
+            <div className="h-16 px-5 flex items-center justify-between border-b border-white/10">
+              <div className="flex items-center gap-2.5">
+                <img
+                  src={SQUARE_BRAND_LOGO}
+                  alt="UNIKORN360"
+                  className="w-8 h-8 rounded-lg object-contain bg-white p-0.5"
+                />
+                <span className="font-bold text-base text-white">InvoicePro 360</span>
               </div>
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen(false)}
+                className="p-1.5 rounded-lg text-slate-300 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 border-b border-white/10">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab("ai-creator");
+                  setMobileMenuOpen(false);
+                }}
+                className="w-full py-2.5 px-4 rounded-xl bg-[#C49A36] text-[#0B1426] font-bold text-sm flex items-center justify-center gap-2"
+              >
+                <PlusCircle className="w-4 h-4" />
+                <span>Create Invoice</span>
+              </button>
+            </div>
+
+            <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+              {navItems.map((item) => {
+                const Icon = item.icon;
+                const isActive = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      setActiveTab(item.id);
+                      setMobileMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium ${
+                      isActive
+                        ? "bg-white/10 text-white font-semibold border-l-4 border-[#C49A36]"
+                        : "text-slate-300 hover:bg-white/5"
+                    }`}
+                  >
+                    <Icon className="w-4 h-4 text-[#C49A36]" />
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
+            </nav>
+          </aside>
+        </div>
+      )}
+
+      {/* Main Content Area (Top Bar + Warm White #F6F5F1 Viewport) */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Compact Top Bar */}
+        <header
+          className="bg-white border-b border-[#E4DFD5] sticky top-0 z-30 h-16 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-4"
+          id="app-header"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(true)}
+              className="lg:hidden p-2 rounded-xl border border-[#E4DFD5] text-[#0B1426] hover:bg-[#F6F5F1] cursor-pointer"
+              aria-label="Open navigation menu"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            <div className="flex items-center gap-2.5 lg:hidden">
+              <img
+                src={SQUARE_BRAND_LOGO}
+                alt="UNIKORN360"
+                className="w-7 h-7 rounded-md object-contain"
+              />
+              <span className="font-bold text-base text-[#0B1426] truncate">
+                InvoicePro 360
+              </span>
+            </div>
+            <div className="hidden lg:block">
+              <span className="text-sm font-semibold text-[#526176]">
+                {companySettings.name}
+              </span>
+              <span className="mx-2 text-[#E4DFD5]">·</span>
+              <span className="text-xs font-mono text-[#526176]">
+                GSTIN: {companySettings.gstin}
+              </span>
+            </div>
+          </div>
+
+          {/* Right Zone: Primary Action (Visible on Mobile/Desktop) + Account Controls */}
+          <div className="flex items-center gap-3" id="auth-header-controls">
+            <button
+              type="button"
+              onClick={() => setActiveTab("ai-creator")}
+              className="px-4 py-2 rounded-xl bg-[#0B1426] hover:bg-[#162442] text-white text-sm font-semibold inline-flex items-center gap-2 transition-colors cursor-pointer min-h-[40px]"
+              id="topbar-create-invoice-btn"
+            >
+              <PlusCircle className="w-4 h-4 text-[#C49A36]" />
+              <span>Create Invoice</span>
+            </button>
+
+            {isVerifiedAdmin && (
+              <button
+                type="button"
+                onClick={() => {
+                  window.history.pushState({}, "", "/super-admin");
+                  setCurrentPath("/super-admin");
+                }}
+                className="px-3 py-2 rounded-xl bg-[#F6F5F1] hover:bg-[#E4DFD5]/60 text-[#0B1426] border border-[#C49A36] text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer min-h-[40px]"
+                title="Open Super Admin Console"
+                id="super-admin-nav-button"
+              >
+                <ShieldCheck className="w-4 h-4 text-[#C49A36]" />
+                <span className="hidden sm:inline">Super Admin</span>
+              </button>
+            )}
+
+            <div className="flex items-center gap-2.5 pl-2 border-l border-[#E4DFD5]">
+              {userAvatar ? (
+                <img
+                  src={userAvatar}
+                  alt={userFullName}
+                  className="w-8 h-8 rounded-full border border-[#E4DFD5] object-cover"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="w-8 h-8 rounded-full bg-[#0B1426] text-white flex items-center justify-center font-bold text-xs">
+                  <User className="w-4 h-4 text-[#C49A36]" />
+                </div>
+              )}
+              <span className="hidden md:inline text-sm font-semibold text-[#0B1426] max-w-[140px] truncate">
+                {userFullName}
+              </span>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="p-2 rounded-xl text-[#526176] hover:text-red-700 hover:bg-[#F6F5F1] transition-colors cursor-pointer"
+                title="Sign Out"
+                id="sign-out-button"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
             </div>
           </div>
         </header>
 
-        {/* Workspace Container */}
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-          {dbError && (
-            <div className="bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs p-4 rounded-xl flex items-center justify-between shadow-lg" id="app-db-error-banner">
-              <div className="flex items-center space-x-2">
-                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                <span className="font-semibold">{dbError}</span>
+        {/* Main Workspace Container */}
+        <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6 unikorn-theme-scope">
+          {/* Consistent Page Title & Primary Action Row */}
+          {activeTab !== "pricing" && activeTab !== "checkout" && activeTab !== "plans" && (
+            <div
+              className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#E4DFD5] pb-4"
+              id="tab-controls-row"
+            >
+              <div>
+                <h1 className="text-[28px] font-bold text-[#0B1426] tracking-tight leading-tight">
+                  {pageMeta[activeTab].title}
+                </h1>
+                <p className="text-[15px] text-[#526176] mt-0.5">
+                  {pageMeta[activeTab].subtitle}
+                </p>
               </div>
+              {activeTab !== "ai-creator" && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("ai-creator")}
+                  className="px-4 py-2.5 rounded-xl bg-[#0B1426] hover:bg-[#162442] text-white text-sm font-semibold inline-flex items-center gap-2 self-start sm:self-auto transition-colors cursor-pointer min-h-[42px]"
+                >
+                  <PlusCircle className="w-4 h-4 text-[#C49A36]" />
+                  <span>Create Invoice</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Operation Success Toast */}
+          {statusToast && (
+            <div
+              className="bg-emerald-50 border border-emerald-300 text-emerald-950 text-sm px-4 py-3 rounded-xl flex items-center justify-between"
+              role="status"
+            >
+              <span className="font-semibold">{statusToast}</span>
               <button
-                onClick={() => setDbError(null)}
-                className="text-rose-400 hover:text-white text-xs font-bold px-2 py-1 bg-rose-500/20 hover:bg-rose-500/30 rounded-lg transition-colors cursor-pointer"
+                type="button"
+                onClick={() => setStatusToast(null)}
+                className="text-xs font-semibold underline ml-4 cursor-pointer"
               >
                 Dismiss
               </button>
             </div>
           )}
 
-          {/* Main Controls - Workspace Navigation */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-white/5 pb-3 gap-4" id="tab-controls-row">
-            <div className="flex bg-[#111113] border border-white/5 p-1 rounded-2xl" id="tab-nav-wrapper">
-              <button 
-                onClick={() => setActiveTab("dashboard")}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 ${
-                  activeTab === "dashboard" 
-                    ? "bg-white/10 text-white border border-white/5 shadow-sm" 
-                    : "text-slate-400 hover:text-white hover:bg-white/5"
-                }`}
-                id="tab-dashboard"
-              >
-                <BarChart3 className="w-3.5 h-3.5" />
-                <span>Executive Analytics</span>
-              </button>
-
-              <button 
-                onClick={() => setActiveTab("ledger")}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 ${
-                  activeTab === "ledger" 
-                    ? "bg-white/10 text-white border border-white/5 shadow-sm" 
-                    : "text-slate-400 hover:text-white hover:bg-white/5"
-                }`}
-                id="tab-ledger"
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5" />
-                <span>Invoices Ledger</span>
-              </button>
-
-              <button 
-                onClick={() => setActiveTab("ai-creator")}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 ${
-                  activeTab === "ai-creator" 
-                    ? "bg-white/10 text-white border border-white/5 shadow-sm" 
-                    : "text-slate-400 hover:text-white hover:bg-white/5"
-                }`}
-                id="tab-creator"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                <span>AI Creator Workspace</span>
-              </button>
-
-              <button 
-                onClick={() => setActiveTab("copilot")}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 ${
-                  activeTab === "copilot" 
-                    ? "bg-white/10 text-white border border-white/5 shadow-sm" 
-                    : "text-slate-400 hover:text-white hover:bg-white/5"
-                }`}
-                id="tab-copilot"
-              >
-                <Bot className="w-3.5 h-3.5" />
-                <span>AI Chat Copilot</span>
-              </button>
-
-              <button 
-                onClick={() => setActiveTab("settings")}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 ${
-                  activeTab === "settings" 
-                    ? "bg-white/10 text-white border border-white/5 shadow-sm" 
-                    : "text-slate-400 hover:text-white hover:bg-white/5"
-                }`}
-                id="tab-settings"
-              >
-                <Settings className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Company Settings</span>
-              </button>
-
-              <button 
-                onClick={() => setActiveTab("plans")}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 ${
-                  activeTab === "plans" 
-                    ? "bg-white/10 text-white border border-white/5 shadow-sm" 
-                    : "text-slate-400 hover:text-white hover:bg-white/5"
-                }`}
-                id="tab-plans"
-              >
-                <CreditCard className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Plans & Pricing</span>
-              </button>
-            </div>
-
-            {/* Dynamic Subscription & Usage Quota Widget */}
-            <div 
-              onClick={() => setActiveTab("plans")}
-              className="flex items-center space-x-3 text-xs bg-[#111113] hover:bg-[#17171a] border border-white/5 hover:border-indigo-500/30 p-2.5 rounded-xl transition-all cursor-pointer shadow-sm group" 
-              id="tier-limits-widget"
-              title="Click to view plans & usage quotas"
+          {/* Error Banner */}
+          {dbError && (
+            <div
+              className="bg-red-50 border border-red-300 text-red-900 text-sm p-4 rounded-xl flex items-center justify-between"
+              id="app-db-error-banner"
             >
-              <div className="space-y-0.5">
-                <div className="flex items-center space-x-1.5">
-                  <Crown className="w-3.5 h-3.5 text-amber-400" />
-                  <span className="font-bold text-slate-300 block text-[10px] uppercase tracking-wide">
-                    PLAN: <b className="text-indigo-400 font-extrabold">{userSubscription?.planName || "BASIC"}</b>
-                  </span>
-                  <span className="text-[9px] bg-indigo-500/10 text-indigo-400 group-hover:bg-indigo-500/20 px-1.5 py-0.2 rounded font-bold border border-indigo-500/20 transition-colors">
-                    Upgrade
-                  </span>
-                </div>
-                <div className="flex items-center space-x-2 text-[10px] text-slate-400 font-medium font-mono">
-                  <span>Invoices: <b className="text-white">{userSubscription?.invoicesUsed ?? invoices.length}</b>/{formatQuotaLabel(userSubscription?.invoiceQuota ?? 10)}</span>
-                  <span className="text-slate-600">•</span>
-                  <span>AI: <b className="text-white">{userSubscription?.aiGenerationsUsed ?? 0}</b>/{formatQuotaLabel(userSubscription?.aiGenerationQuota ?? 5)}</span>
-                </div>
+              <div className="flex items-center gap-2.5">
+                <AlertCircle className="w-5 h-5 text-red-700 shrink-0" />
+                <span className="font-medium">{dbError}</span>
               </div>
+              <button
+                type="button"
+                onClick={() => setDbError(null)}
+                className="text-red-800 hover:underline text-xs font-semibold px-2 py-1 cursor-pointer"
+              >
+                Dismiss
+              </button>
             </div>
-          </div>
+          )}
 
-          {/* ACTIVE PANELS SWITCHBOARD */}
+          {/* Active Workspace View */}
           <div className="animate-fade-in-up" key={activeTab} id="active-tab-panel">
             {activeTab === "dashboard" && (
-              <DashboardOverview 
-                invoices={invoices} 
+              <DashboardOverview
+                invoices={invoices}
                 onSelectInvoice={(inv) => setSelectedInvoice(inv)}
                 onRecordPayment={(inv) => setRecordingPaymentInvoice(inv)}
                 companySettings={companySettings}
                 subscription={userSubscription}
-                onUpgradeClick={() => setActiveTab("plans")}
+                onUpgradeClick={() => setActiveTab("pricing")}
               />
             )}
 
             {activeTab === "ledger" && (
-              <InvoiceList 
-                invoices={invoices} 
-                onSelectInvoice={(inv) => setSelectedInvoice(inv)} 
+              <InvoiceList
+                invoices={invoices}
+                onSelectInvoice={(inv) => setSelectedInvoice(inv)}
                 onDeleteInvoice={handleDeleteInvoice}
                 onOpenCreateModal={() => setActiveTab("ai-creator")}
                 searchFilter={ledgerSearchQuery}
@@ -753,7 +1199,7 @@ export default function App() {
             )}
 
             {activeTab === "ai-creator" && (
-              <InvoiceCreator 
+              <InvoiceCreator
                 onInvoiceCreated={handleInvoiceCreated}
                 onBatchInvoicesCreated={handleBatchInvoicesCreated}
                 onClose={() => setActiveTab("ledger")}
@@ -762,8 +1208,122 @@ export default function App() {
               />
             )}
 
+            {activeTab === "customers" && (
+              <div className="space-y-5" id="customer-directory-view">
+                {/* Search and Filter Controls Above List */}
+                <div className="bg-white border border-[#E4DFD5] rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="relative flex-1">
+                    <Search className="w-4 h-4 text-[#526176] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={customerSearch}
+                      onChange={(e) => setCustomerSearch(e.target.value)}
+                      placeholder="Search customers or vendors by name, GSTIN, or city..."
+                      className="w-full pl-10 pr-4 py-2 rounded-xl border border-[#E4DFD5] text-sm text-[#263449] placeholder-[#526176] focus:outline-none"
+                    />
+                  </div>
+                  <div className="inline-flex items-center bg-[#F6F5F1] border border-[#E4DFD5] p-1 rounded-xl self-start">
+                    {(["all", "Customer", "Vendor"] as const).map((role) => (
+                      <button
+                        key={role}
+                        type="button"
+                        onClick={() => setCustomerRoleFilter(role)}
+                        className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                          customerRoleFilter === role
+                            ? "bg-[#0B1426] text-white"
+                            : "text-[#526176] hover:text-[#0B1426]"
+                        }`}
+                      >
+                        {role === "all" ? "All Parties" : `${role}s`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Customers & Vendors Table */}
+                <div className="bg-white border border-[#E4DFD5] rounded-xl overflow-hidden">
+                  {customerDirectory.length === 0 ? (
+                    <div className="p-10 text-center space-y-3">
+                      <Users className="w-7 h-7 text-[#526176] mx-auto" />
+                      <div className="text-base font-semibold text-[#0B1426]">
+                        No Matching Customer or Vendor Records
+                      </div>
+                      <p className="text-sm text-[#526176]">
+                        Create your first GST invoice to automatically populate your customer and vendor directory.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("ai-creator")}
+                        className="px-4 py-2 rounded-xl bg-[#0B1426] text-white text-sm font-semibold cursor-pointer"
+                      >
+                        Create Invoice
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse text-sm">
+                        <thead>
+                          <tr className="bg-[#F6F5F1] border-b border-[#E4DFD5] text-[#0B1426] font-semibold">
+                            <th className="py-3.5 px-6">Party Name</th>
+                            <th className="py-3.5 px-4">Type</th>
+                            <th className="py-3.5 px-4">GSTIN</th>
+                            <th className="py-3.5 px-4 text-right">Invoices</th>
+                            <th className="py-3.5 px-4 text-right">Total Billed</th>
+                            <th className="py-3.5 px-4 text-right">Balance Due</th>
+                            <th className="py-3.5 px-6 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#E4DFD5] text-[#263449]">
+                          {customerDirectory.map((party, idx) => (
+                            <tr key={idx} className="hover:bg-[#F6F5F1]/60 transition-colors">
+                              <td className="py-3.5 px-6">
+                                <div className="font-semibold text-[#0B1426]">{party.name}</div>
+                                <div className="text-xs text-[#526176] truncate max-w-xs">
+                                  {party.address}
+                                </div>
+                              </td>
+                              <td className="py-3.5 px-4 text-xs font-semibold text-[#526176]">
+                                {party.role}
+                              </td>
+                              <td className="py-3.5 px-4 font-mono text-xs text-[#263449]">
+                                {party.gstin}
+                              </td>
+                              <td className="py-3.5 px-4 text-right tabular-nums">
+                                {party.invoiceCount}
+                              </td>
+                              <td className="py-3.5 px-4 text-right font-semibold text-[#0B1426] tabular-nums">
+                                ₹{party.totalBilled.toLocaleString("en-IN")}
+                              </td>
+                              <td className="py-3.5 px-4 text-right font-semibold tabular-nums">
+                                <span className={party.balanceDue > 0 ? "text-amber-800" : "text-emerald-700"}>
+                                  ₹{party.balanceDue.toLocaleString("en-IN")}
+                                </span>
+                              </td>
+                              <td className="py-3.5 px-6 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setLedgerSearchQuery(party.name);
+                                    setActiveTab("ledger");
+                                  }}
+                                  className="text-xs font-semibold text-[#0B1426] hover:underline inline-flex items-center gap-1 cursor-pointer"
+                                >
+                                  <span>View Invoices</span>
+                                  <ArrowUpRight className="w-3.5 h-3.5 text-[#C49A36]" />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {activeTab === "copilot" && (
-              <InvoiceChat 
+              <InvoiceChat
                 invoices={invoices}
                 onApplyFilter={handleApplyChatFilter}
                 messages={chatMessages}
@@ -771,21 +1331,64 @@ export default function App() {
               />
             )}
 
-            {activeTab === "settings" && (
-              <CompanySettingsComponent 
-                settings={companySettings}
-                onSave={handleSaveCompanySettings}
+            {activeTab === "pricing" && (
+              <PricingPage
+                currentPlanCode={userSubscription?.planId || "basic"}
+                currentBillingModel={userSubscription?.billingModel || "free"}
+                isAuthenticated={Boolean(currentUser)}
+                onSelectPlanForCheckout={handleSelectPlanForCheckout}
+              />
+            )}
+
+            {activeTab === "checkout" && (
+              <CheckoutPage
+                planCode={checkoutSelection.planCode}
+                billingCycle={checkoutSelection.billingCycle}
+                userEmail={currentUser.email}
+                userName={userFullName}
+                onChangeCycle={(cycle) =>
+                  setCheckoutSelection((prev) => ({ ...prev, billingCycle: cycle }))
+                }
+                onBackToPricing={() => setActiveTab("pricing")}
+                onPaymentVerified={async () => {
+                  await refreshSubscription();
+                  setActiveTab("plans");
+                }}
               />
             )}
 
             {activeTab === "plans" && (
-              <PlansAndPricing 
+              <BillingDashboard
                 subscription={userSubscription}
-                onSelectPlan={() => refreshSubscription()}
+                onRefreshSubscription={refreshSubscription}
+                onNavigateToPricing={() => setActiveTab("pricing")}
+                onSelectPlanForCheckout={handleSelectPlanForCheckout}
+              />
+            )}
+
+            {activeTab === "settings" && (
+              <CompanySettingsComponent
+                settings={companySettings}
+                onSave={handleSaveCompanySettings}
               />
             )}
           </div>
         </main>
+
+        {/* Quiet Standardized Footer */}
+        <footer
+          className="bg-white border-t border-[#E4DFD5] text-[#526176] py-4 px-6 text-xs mt-12"
+          id="app-footer"
+        >
+          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-[#0B1426]">InvoicePro 360</span>
+              <span>·</span>
+              <span>UNIKORN360 Business Intelligence</span>
+            </div>
+            <div>GST Compliance & Commercial Billing Workspace</div>
+          </div>
+        </footer>
       </div>
 
       {/* Quota Exceeded Modal */}
@@ -800,32 +1403,14 @@ export default function App() {
           onClose={() => setQuotaModal(null)}
           onViewPlans={() => {
             setQuotaModal(null);
-            setActiveTab("plans");
+            setActiveTab("pricing");
           }}
         />
       )}
 
-      {/* FOOTER */}
-      <footer className="bg-[#111113] text-slate-500 py-6 text-xs border-t border-white/5 mt-12" id="app-footer">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center space-x-2">
-            <span className="font-display font-extrabold text-white tracking-tight text-sm">InvoicePro AI</span>
-            <span className="text-slate-700 font-bold">|</span>
-            <span className="text-slate-400">Developed by <strong className="text-slate-300 font-semibold">Unikorn360 AI Solutions</strong></span>
-          </div>
-          <div className="flex items-center space-x-4 font-semibold text-slate-500">
-            <span>GST Audit Ready</span>
-            <span>•</span>
-            <span>Supabase PostgreSQL + RLS</span>
-            <span>•</span>
-            <span>Cloud Synchronized</span>
-          </div>
-        </div>
-      </footer>
-
-      {/* FLOATING EXPANDED DETAILS / PRINT DIALOG COMPONENT */}
+      {/* Invoice Preview / Print / Export Modal */}
       {selectedInvoice && (
-        <InvoiceViewer 
+        <InvoiceViewer
           invoice={selectedInvoice}
           allInvoices={invoices}
           onClose={() => setSelectedInvoice(null)}
@@ -836,9 +1421,9 @@ export default function App() {
         />
       )}
 
-      {/* RECORD PAYMENT MODAL */}
+      {/* Record Customer Invoice Payment Modal */}
       {recordingPaymentInvoice && (
-        <RecordPaymentModal 
+        <RecordPaymentModal
           invoice={recordingPaymentInvoice}
           onClose={() => setRecordingPaymentInvoice(null)}
           onSavePayment={(updatedInvoice) => {
@@ -848,26 +1433,34 @@ export default function App() {
         />
       )}
 
-      {/* CUSTOM CONFIRMATION DIALOG */}
+      {/* Confirmation Dialog */}
       {confirmDialog && confirmDialog.isOpen && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 z-[100] animate-fade-in" id="confirm-modal-overlay">
-          <div className="bg-[#111113] border border-white/10 rounded-2xl p-6 max-w-sm w-full space-y-6 shadow-2xl animate-scale-in" id="confirm-modal-box">
-            <div className="space-y-2 text-center">
-              <h3 className="text-base font-bold text-white font-display">{confirmDialog.title}</h3>
-              <p className="text-xs text-slate-400 leading-relaxed">{confirmDialog.message}</p>
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-[100]"
+          id="confirm-modal-overlay"
+        >
+          <div
+            className="bg-white border border-[#E4DFD5] rounded-xl p-6 max-w-sm w-full space-y-5 shadow-xl"
+            id="confirm-modal-box"
+          >
+            <div className="space-y-1.5">
+              <h3 className="text-lg font-bold text-[#0B1426]">{confirmDialog.title}</h3>
+              <p className="text-sm text-[#526176] leading-relaxed">{confirmDialog.message}</p>
             </div>
-            
-            <div className="flex items-center space-x-3">
+
+            <div className="flex items-center justify-end gap-3 pt-2 border-t border-[#E4DFD5]">
               <button
+                type="button"
                 onClick={() => setConfirmDialog(null)}
-                className="flex-1 bg-white/5 hover:bg-white/10 border border-white/5 text-slate-300 font-bold py-2 rounded-xl text-xs transition-all cursor-pointer"
+                className="px-4 py-2 rounded-xl border border-[#E4DFD5] text-sm font-semibold text-[#526176] hover:text-[#0B1426] cursor-pointer"
                 id="confirm-modal-cancel"
               >
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={confirmDialog.onConfirm}
-                className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-bold py-2 rounded-xl text-xs transition-all cursor-pointer shadow-md shadow-rose-600/10"
+                className="px-4 py-2 rounded-xl bg-red-700 hover:bg-red-800 text-white text-sm font-semibold cursor-pointer"
                 id="confirm-modal-action"
               >
                 {confirmDialog.confirmText}

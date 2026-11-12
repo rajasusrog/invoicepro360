@@ -1,6 +1,7 @@
 import { jsonResponse, errorResponse } from "../../_gemini";
 import { generateInvoiceFromText } from "../../_providers";
 import { authenticateRequest, checkAndIncrementAiQuota, refundAiQuota } from "../../_subscription";
+import { analyzeSecurityEvent } from "../../_abuse_detector";
 
 interface Env {
   GEMINI_API_KEY?: string;
@@ -10,6 +11,7 @@ interface Env {
 
 export const onRequestPost = async (context: { request: Request; env: Env }) => {
   let authenticatedUserId: string | null = null;
+  const startTime = Date.now();
   const { request, env } = context;
 
   try {
@@ -19,6 +21,12 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
       return errorResponse(authResult.error || "Authentication required", 401, "AUTH_REQUIRED");
     }
     authenticatedUserId = authResult.user.id;
+    const userEmail = authResult.user.email;
+
+    // Check account suspension status
+    if (authResult.user.is_suspended) {
+      return errorResponse("Your account is currently restricted. Please contact administrative support.", 403, "ACCOUNT_SUSPENDED");
+    }
 
     // 2. Validate request body and prompt BEFORE checking/charging quota
     let body: any;
@@ -33,7 +41,31 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
       return errorResponse("Prompt is required and must not be empty", 400, "BAD_REQUEST");
     }
 
-    // 3. Concurrency-safe atomic AI quota enforcement
+    // 3. Automated Abuse & Prompt Injection Detection (Runs before quota charge)
+    const securityCheck = await analyzeSecurityEvent({
+      text: prompt.trim(),
+      userId: authenticatedUserId,
+      userEmail,
+      endpoint: "/api/invoice/create-from-text",
+      operationType: "text_generation",
+      provider: provider || "gemini",
+      model,
+      statusCode: 200
+    }, env);
+
+    if (securityCheck.isHighConfidenceAbuse && securityCheck.recommendedAction === "block") {
+      return errorResponse(
+        `Request blocked by automated security policy: ${securityCheck.summary}`,
+        403,
+        "SECURITY_CONTAINED",
+        {
+          riskScore: securityCheck.riskScore,
+          category: securityCheck.category
+        }
+      );
+    }
+
+    // 4. Concurrency-safe atomic AI quota enforcement
     const quotaResult = await checkAndIncrementAiQuota(authenticatedUserId, env);
     if (!quotaResult.allowed) {
       return errorResponse(
@@ -50,7 +82,7 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
       );
     }
 
-    // 4. Invoke Multi-provider AI generation (Gemini verified default, OpenAI, Claude)
+    // 5. Invoke Multi-provider AI generation (Gemini verified default, OpenAI, Claude)
     try {
       const invoiceData = await generateInvoiceFromText({
         prompt: prompt.trim(),
@@ -59,6 +91,8 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
         env
       });
 
+      const latencyMs = Date.now() - startTime;
+
       return jsonResponse({
         ...invoiceData,
         _usage: {
@@ -66,7 +100,8 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
           limit: quotaResult.limit,
           remaining: quotaResult.remaining,
           resetDate: quotaResult.resetDate,
-          planId: quotaResult.planId
+          planId: quotaResult.planId,
+          latencyMs
         }
       });
     } catch (providerError: any) {

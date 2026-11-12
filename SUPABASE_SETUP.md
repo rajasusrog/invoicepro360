@@ -61,25 +61,45 @@ Set the following environment variables in your environment or `.env` file:
 ```env
 VITE_SUPABASE_URL=https://<your-project-ref>.supabase.co
 VITE_SUPABASE_ANON_KEY=eyJhbGciOi...<your-anon-key>
+
+# Server-Side Privileged Allowlist (Cloudflare Pages Environment or backend .env)
+SUPER_ADMIN_EMAIL_ALLOWLIST=admin@invoicepro360.com,raj.asusrog@gmail.com
 ```
 
 > **Security Note**: Never expose the Supabase `service_role` secret or Google Client Secret in frontend code. Only the public `anon` key is used in the browser client.
 
 ---
 
-### Step 7: Run the Database Schema & RLS Policies
-1. In the Supabase Dashboard, open the **SQL Editor**.
-2. Copy and paste the contents of `supabase/schema.sql` into the editor.
-3. Click **Run** to execute the script.
-4. This will create:
-   - `public.profiles` with auto-trigger on new Google signups.
-   - `public.invoices` scoped to `user_id UUID REFERENCES auth.users(id)`.
-   - Complete Row Level Security policies enforcing `auth.uid() = user_id`.
+### Step 7: Run the Database Migrations & Schema
+
+In the Supabase Dashboard, open the **SQL Editor** and run the scripts in order:
+
+1. **`supabase/schema.sql`** (or `supabase/migrations/20261015000000_subscription_plans_and_quotas.sql`):
+   - Sets up `profiles`, `invoices`, `subscription_plans`, `subscriptions`, and `usage_history`.
+   - Creates concurrency-safe PostgreSQL stored procedures:
+     - `check_and_increment_ai_quota(user_uuid)`
+     - `refund_ai_quota(user_uuid)`
+     - `check_and_increment_invoice_quota(user_uuid)`
+   - Enables RLS on all user tables.
+
+2. **`supabase/migrations/20261015010000_super_admin_and_ai_security.sql`**:
+   - Extends profiles with `is_suspended`, `suspended_at`, `suspended_reason`, and `last_seen_at`.
+   - Creates `admin_roles` (super_admin, security_auditor, support_admin).
+   - Creates append-only `admin_audit_logs` (tamper-resistant with no UPDATE or DELETE privileges).
+   - Creates `security_alerts` queue for automated abuse threat management.
+   - Creates `ai_request_logs` for privacy-minimized telemetry (PII scrubbed).
+   - Creates `admin_security_config` for threshold and rate limiting policies.
 
 ---
 
-### Step 8: Test Authentication
-1. Open the application in your browser.
-2. Click **Continue with Google**.
-3. Complete the Google authentication prompt.
-4. You will be redirected back into InvoicePro AI with your authenticated user profile and isolated ledger.
+### Step 8: Super Admin Console Access
+
+1. Add your administrator email to the `SUPER_ADMIN_EMAIL_ALLOWLIST` server binding or insert a record into `public.admin_roles`:
+   ```sql
+   INSERT INTO public.admin_roles (user_id, email, role)
+   VALUES ('<your-auth-user-id>', '<your-admin-email>', 'super_admin')
+   ON CONFLICT (email) DO NOTHING;
+   ```
+2. Authenticate through Google OAuth.
+3. Access the dedicated Super Admin Console at `/super-admin`.
+4. Unauthorized users attempting to access `/super-admin` are blocked with an HTTP 403 Forbidden screen and their attempt is automatically logged to the audit trail.

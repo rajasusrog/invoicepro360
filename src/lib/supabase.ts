@@ -366,71 +366,73 @@ export async function fetchUserInvoices(userId: string): Promise<Invoice[]> {
 }
 
 /**
- * Insert a new invoice into Supabase PostgreSQL with server-enforced quota verification
+ * Insert a new invoice into Supabase PostgreSQL with server-enforced atomic quota verification
  */
 export async function createInvoiceInDb(invoice: Invoice, userId: string): Promise<Invoice> {
-  try {
-    const authHeaders = await getAuthHeaders();
+  const authHeaders = await getAuthHeaders();
 
-    const response = await fetch('/api/invoice/save', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...authHeaders
-      },
-      body: JSON.stringify({ invoice })
-    });
+  const response = await fetch('/api/invoice/save', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders
+    },
+    body: JSON.stringify({
+      invoice,
+      idempotencyKey: `inv_${userId}_${invoice.id || invoice.invoiceNumber}`
+    })
+  });
 
-    const result = await response.json().catch(() => ({}));
+  const result = await response.json().catch(() => ({}));
 
-    if (!response.ok) {
-      const error: any = new Error(result.error || 'Failed to save invoice');
-      error.code = result.code || (response.status === 429 ? 'INVOICE_QUOTA_EXCEEDED' : 'SAVE_ERROR');
-      error.used = result.used;
-      error.limit = result.limit;
-      error.resetDate = result.resetDate;
-      error.planId = result.planId;
-      throw error;
-    }
-
-    return result.invoice || invoice;
-  } catch (err: any) {
-    if (err.code === 'INVOICE_QUOTA_EXCEEDED') {
-      throw err;
-    }
-    // If server save failed due to offline/network but client has Supabase directly configured, fallback
-    if (isSupabaseConfigured) {
-      console.warn('API save route failed, checking direct Supabase insert:', err.message);
-      const row = mapInvoiceToDbRow(invoice, userId);
-      const { data, error } = await supabase
-        .from('invoices')
-        .insert(row)
-        .select()
-        .single();
-
-      if (error) {
-        console.error('Error creating invoice in Supabase:', error);
-        throw error;
-      }
-      return mapDbRowToInvoice(data);
-    }
-    throw err;
+  if (!response.ok) {
+    const error: any = new Error(result.error || 'Failed to save invoice');
+    error.code = result.code || (response.status === 429 ? 'INVOICE_QUOTA_EXCEEDED' : 'SAVE_ERROR');
+    error.used = result.used;
+    error.limit = result.limit;
+    error.resetDate = result.resetDate;
+    error.planId = result.planId;
+    throw error;
   }
+
+  return result.invoice || invoice;
 }
 
 /**
- * Insert multiple invoices into Supabase PostgreSQL with quota tracking
+ * Insert multiple invoices atomically with whole-batch quota checking before insertion.
+ * If the batch exceeds remaining monthly quota, zero invoices are inserted and INVOICE_QUOTA_EXCEEDED is thrown.
  */
 export async function batchCreateInvoicesInDb(invoices: Invoice[], userId: string): Promise<Invoice[]> {
   if (invoices.length === 0) return [];
-  const savedList: Invoice[] = [];
 
-  for (const inv of invoices) {
-    const saved = await createInvoiceInDb(inv, userId);
-    savedList.push(saved);
+  const authHeaders = await getAuthHeaders();
+  const batchKey = `batch_${userId}_${invoices.map(i => i.id || i.invoiceNumber).join('_')}`;
+
+  const response = await fetch('/api/invoice/save', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders
+    },
+    body: JSON.stringify({
+      invoices,
+      idempotencyKey: batchKey
+    })
+  });
+
+  const result = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const error: any = new Error(result.error || 'Batch invoice import exceeded quota or failed validation.');
+    error.code = result.code || (response.status === 429 ? 'INVOICE_QUOTA_EXCEEDED' : 'SAVE_ERROR');
+    error.used = result.used;
+    error.limit = result.limit;
+    error.resetDate = result.resetDate;
+    error.planId = result.planId;
+    throw error;
   }
 
-  return savedList;
+  return Array.isArray(result.invoices) ? result.invoices : invoices;
 }
 
 /**

@@ -1,5 +1,9 @@
 import { jsonResponse, errorResponse } from "../../_gemini";
-import { authenticateRequest, checkAndIncrementInvoiceQuota, getServerSupabase } from "../../_subscription";
+import { authenticateRequest, getServerSupabase } from "../../_subscription";
+import {
+  checkAndReserveBatchInvoiceQuota,
+  rollbackBatchInvoiceQuota
+} from "../../_billing";
 
 interface Env {
   [key: string]: any;
@@ -16,7 +20,15 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
     }
     const userId = authResult.user.id;
 
-    // 2. Validate invoice payload BEFORE checking/charging quota
+    if (authResult.user.is_suspended) {
+      return errorResponse(
+        "Your account is currently restricted. Please contact administrative support.",
+        403,
+        "ACCOUNT_SUSPENDED"
+      );
+    }
+
+    // 2. Parse and validate single or batch invoice payload BEFORE checking/charging quota
     let body: any;
     try {
       body = await request.json();
@@ -24,39 +36,62 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
       return errorResponse("Invalid JSON in request body", 400, "BAD_REQUEST");
     }
 
-    const { invoice } = body || {};
-    if (!invoice || typeof invoice !== "object") {
-      return errorResponse("invoice object is required in request body", 400, "BAD_REQUEST");
+    const isBatch = Array.isArray(body?.invoices);
+    const invoiceList: any[] = isBatch ? body.invoices : body?.invoice ? [body.invoice] : [];
+
+    if (invoiceList.length === 0) {
+      return errorResponse("At least one valid invoice object is required in request body", 400, "BAD_REQUEST");
     }
 
-    if (!invoice.invoiceNumber || !invoice.supplierName || !invoice.customerName) {
-      return errorResponse("Missing required invoice fields (invoiceNumber, supplierName, customerName)", 400, "BAD_REQUEST");
+    for (const inv of invoiceList) {
+      if (!inv || typeof inv !== "object" || !inv.invoiceNumber || !inv.supplierName || !inv.customerName) {
+        return errorResponse(
+          "Missing required invoice fields (invoiceNumber, supplierName, customerName). Quota was not charged.",
+          400,
+          "BAD_REQUEST"
+        );
+      }
     }
 
-    // 3. Concurrency-safe atomic invoice quota check & increment
-    const quotaResult = await checkAndIncrementInvoiceQuota(userId, env);
+    const idempotencyKey =
+      body?.idempotencyKey ||
+      `inv_batch_${userId}_${invoiceList.map((i) => i.id || i.invoiceNumber).join("_")}`;
+
+    // 3. Concurrency-safe atomic invoice quota check & reservation for the ENTIRE batch
+    const quotaResult = await checkAndReserveBatchInvoiceQuota(
+      userId,
+      invoiceList.length,
+      idempotencyKey,
+      env
+    );
+
     if (!quotaResult.allowed) {
       return errorResponse(
-        quotaResult.message || "Monthly successful invoice quota reached. Please upgrade your plan.",
+        quotaResult.message || "Monthly invoice quota reached. Please upgrade your plan.",
         429,
         "INVOICE_QUOTA_EXCEEDED",
         {
           used: quotaResult.used,
           limit: quotaResult.limit,
-          remaining: 0,
+          remaining: quotaResult.remaining,
           resetDate: quotaResult.resetDate,
           planId: quotaResult.planId
         }
       );
     }
 
-    // 4. Persist invoice to Supabase with server-enforced user_id
+    // 4. Persist invoice(s) to Supabase with server-enforced user_id
     const supabase = getServerSupabase(env);
     if (!supabase || userId === "local-dev-user") {
-      // Local/mock fallback when Supabase is not configured in dev
       return jsonResponse({
         success: true,
-        invoice,
+        invoice: invoiceList[0],
+        invoices: invoiceList,
+        usage: {
+          invoicesUsed: quotaResult.used,
+          invoiceQuota: quotaResult.limit,
+          remaining: quotaResult.remaining
+        },
         _usage: {
           used: quotaResult.used,
           limit: quotaResult.limit,
@@ -67,7 +102,7 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
       });
     }
 
-    const dbRow = {
+    const dbRows = invoiceList.map((invoice) => ({
       id: invoice.id || `inv-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       user_id: userId, // Server-enforced, cannot be forged
       invoice_number: invoice.invoiceNumber,
@@ -89,7 +124,7 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
       status: invoice.status || "unpaid",
       payment_status: invoice.paymentStatus || "due",
       amount_paid: Number(invoice.amountPaid) || 0,
-      balance_due: Number(invoice.balanceDue) || Number(invoice.totalAmount) || 0,
+      balance_due: Number(invoice.balanceDue) ?? Number(invoice.totalAmount) ?? 0,
       payments: invoice.payments || [],
       category: invoice.category || "Sales",
       expense_category: invoice.expenseCategory || null,
@@ -97,36 +132,30 @@ export const onRequestPost = async (context: { request: Request; env: Env }) => 
       notes: invoice.notes || null,
       ocr_source: invoice.ocrSource || null,
       created_at: invoice.createdAt || new Date().toISOString()
-    };
+    }));
 
-    const { data: savedRow, error: insertError } = await supabase
+    const { data: savedRows, error: insertError } = await supabase
       .from("invoices")
-      .insert(dbRow)
-      .select()
-      .single();
+      .insert(dbRows)
+      .select();
 
     if (insertError) {
-      // If saving failed, decrement invoices_used counter so user is not penalized
-      try {
-        await supabase
-          .from("subscriptions")
-          .update({ invoices_used: Math.max(0, (quotaResult.used || 1) - 1) })
-          .eq("user_id", userId);
-      } catch (refundErr) {
-        console.error("Failed to refund invoice counter:", refundErr);
-      }
-
-      console.error("Failed to insert invoice into database:", insertError);
-      return errorResponse(`Failed to persist invoice: ${insertError.message}`, 500, "DB_INSERT_ERROR");
+      // Rollback reserved quota so failed creation never consumes quota
+      await rollbackBatchInvoiceQuota(userId, invoiceList.length, env);
+      console.error("Failed to insert invoice(s) into database:", insertError);
+      return errorResponse(`Failed to persist invoice(s): ${insertError.message}`, 500, "DB_INSERT_ERROR");
     }
+
+    const savedInvoices = invoiceList.map((inv, idx) => ({
+      ...inv,
+      id: savedRows?.[idx]?.id || inv.id,
+      createdAt: savedRows?.[idx]?.created_at || inv.createdAt
+    }));
 
     return jsonResponse({
       success: true,
-      invoice: {
-        ...invoice,
-        id: savedRow.id,
-        createdAt: savedRow.created_at
-      },
+      invoice: savedInvoices[0],
+      invoices: savedInvoices,
       _usage: {
         used: quotaResult.used,
         limit: quotaResult.limit,
